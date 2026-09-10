@@ -15,6 +15,9 @@ GEMINI_API_KEY = _get("GEMINI_API_KEY")
 # Neon Postgres connection string
 DATABASE_URL = _get("DATABASE_URL")
 
+# football-data.org (free tier: soccer scores fallback, 10 req/min)
+FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
+
 # Worker settings
 MAX_CREDITS_PER_SCAN = int(_get("MAX_CREDITS_PER_SCAN", "400"))
 MAX_LEGS_PER_ACCA = int(_get("MAX_LEGS_PER_ACCA", "6"))
@@ -35,6 +38,7 @@ def as_dict() -> dict:
         "TAVILY_API_KEY": masked(TAVILY_API_KEY),
         "GROQ_API_KEY": masked(GROQ_API_KEY),
         "GEMINI_API_KEY": masked(GEMINI_API_KEY),
+        "FOOTBALL_DATA_ORG_KEY": masked(FOOTBALL_DATA_ORG_KEY),
         "DATABASE_URL": masked(DATABASE_URL),
         "MAX_LEGS_PER_ACCA": MAX_LEGS_PER_ACCA,
         "MIN_ODDS": MIN_ODDS,
