@@ -134,6 +134,85 @@ class SofaOdds:
                 pass
         return events or []
 
+    def event_markets(self, eid):
+        """Full per-match markets: {marketId: [market_obj]}. Cached per scan."""
+        if not hasattr(self, "_em"):
+            self._em = {}
+        if eid in self._em:
+            return self._em[eid]
+        d = self._get(f"event/{eid}/odds/1/all")
+        mkts = {}
+        for m in ((d or {}).get("markets", []) or []):
+            try:
+                if m.get("suspended") or m.get("isLive"):
+                    continue
+                mkts.setdefault(m.get("marketId"), []).append(m)
+            except Exception:
+                continue
+        self._em[eid] = mkts
+        return mkts
+
+    def _market_outcomes(self, m, wanted):
+        """Extract {name: decimal} for wanted choice names. None if incomplete."""
+        try:
+            got = {}
+            for c in m.get("choices", []):
+                if c.get("name") in wanted:
+                    dec = frac_to_dec(c.get("fractionalValue"))
+                    if dec:
+                        got[c["name"]] = dec
+            return got if all(w in got for w in wanted) else None
+        except Exception:
+            return None
+
+    def expand_event(self, base, eid, markets):
+        """Extra shaped events for BTTS / O-U-2.5 / DC. Same shape as 1X2."""
+        extra = []
+        home = base["home_team"]
+        away = base["away_team"]
+
+        def _shape(suffix, market_label, outcomes, best):
+            ev = dict(base)
+            ev["id"] = f"{base['id']}-{suffix}"
+            ev["market"] = market_label
+            ev["bookmakers"] = [{"key": BOOK_KEY, "title": BOOK_TITLE,
+                                   "markets": [{"key": "h2h", "outcomes": outcomes}]}]
+            ev["best_odds"] = best["price"]
+            ev["best_bookmaker"] = BOOK_TITLE
+            return ev
+
+        # BTTS (id 5)
+        for m in markets.get(5, []):
+            oc = self._market_outcomes(m, ("Yes", "No"))
+            if oc:
+                outs = [{"name": "BTTS: Yes", "price": oc["Yes"]},
+                        {"name": "BTTS: No", "price": oc["No"]}]
+                best = max(outs, key=lambda o: o["price"])
+                extra.append(_shape("btts", "BTTS", outs, best))
+                break
+        # O/U 2.5 only (id 9, choiceGroup 2.5)
+        for m in markets.get(9, []):
+            if str(m.get("choiceGroup", "")) != "2.5":
+                continue
+            oc = self._market_outcomes(m, ("Over", "Under"))
+            if oc:
+                outs = [{"name": "Over 2.5", "price": oc["Over"]},
+                        {"name": "Under 2.5", "price": oc["Under"]}]
+                best = max(outs, key=lambda o: o["price"])
+                extra.append(_shape("ou25", "O/U 2.5", outs, best))
+                break
+        # Double chance (id 2)
+        for m in markets.get(2, []):
+            oc = self._market_outcomes(m, ("1X", "X2", "12"))
+            if oc:
+                outs = [{"name": "DC: 1X", "price": oc["1X"]},
+                        {"name": "DC: X2", "price": oc["X2"]},
+                        {"name": "DC: 12", "price": oc["12"]}]
+                best = max(outs, key=lambda o: o["price"])
+                extra.append(_shape("dc", "Double chance", outs, best))
+                break
+        return extra
+
     def day_odds(self, datestr):
         """{event_id_str: {'1': dec, 'X': dec, '2': dec}} for one date."""
         if datestr in self._day_odds:
@@ -153,10 +232,12 @@ class SofaOdds:
         self._day_odds[datestr] = out
         return out
 
-    def scan(self, sport_keys, hours_ahead=48, callback=None):
+    def scan(self, sport_keys, hours_ahead=48, callback=None, markets="1X2"):
         """
         Returns {sport_key: [odds-api-shaped events]}.
         Zero quota cost. Skips leagues/events without odds.
+        markets="1X2" (fast, 1 bulk call/day) or "full" (+BTTS/O-U-2.5/DC,
+        1 extra call per match).
         """
         results = {}
         if not self.session:
@@ -196,10 +277,13 @@ class SofaOdds:
                         continue
                     home = (e.get("homeTeam") or {}).get("name", "?")
                     away = (e.get("awayTeam") or {}).get("name", "?")
-                    shaped.append({
+                    base = {
                         "id": f"sofa-{eid}",
+                        "match_id": f"match-{eid}",
+                        "market": "1X2",
                         "sport_key": sk,
                         "sport_title": (e.get("tournament") or {}).get("name", sk),
+                        "league": (e.get("tournament") or {}).get("name", sk),
                         "home_team": home,
                         "away_team": away,
                         "commence_time": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -215,7 +299,16 @@ class SofaOdds:
                                 ],
                             }],
                         }],
-                    })
+                    }
+                    shaped.append(base)
+                    if markets == "full":
+                        try:
+                            mkts = self.event_markets(eid)
+                            if mkts:
+                                shaped.extend(self.expand_event(base, eid, mkts))
+                            time.sleep(0.2)
+                        except Exception:
+                            continue
                 except Exception:
                     continue
             if shaped:
@@ -231,9 +324,10 @@ class SofaOdds:
         return results
 
 
-def scan_sofa_soccer(sport_keys, hours_ahead=48, callback=None, log=None):
+def scan_sofa_soccer(sport_keys, hours_ahead=48, callback=None, log=None, markets="1X2"):
     """Convenience: scan and return odds-api-shaped results."""
-    return SofaOdds(log=log).scan(sport_keys, hours_ahead=hours_ahead, callback=callback)
+    return SofaOdds(log=log).scan(sport_keys, hours_ahead=hours_ahead,
+                                  callback=callback, markets=markets)
 
 
 if __name__ == "__main__":

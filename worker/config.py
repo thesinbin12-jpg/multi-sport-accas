@@ -22,6 +22,8 @@ FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
 # Odds sources: SofaScore self-fetcher is primary (free, keyless, zero quota).
 # The Odds API (paid quota) is fallback only, guarded by ODDS_MIN_FLOOR.
 SOFA_PRIMARY = _get("SOFA_PRIMARY", "1") == "1"
+SOFA_MARKETS = _get("SOFA_MARKETS", "full")  # 1X2 (fast) or full (+BTTS/O-U-2.5/DC)
+SMARKETS_ON = _get("SMARKETS_ON", "1") == "1"  # Smarkets exchange as 2nd free source
 ODDS_MIN_FLOOR = int(_get("ODDS_MIN_CREDITS_FLOOR", "50"))
 # Scan focus: comma-separated groups (soccer,basketball) and/or sport keys.
 # Empty = all groups. Narrow this to stretch the Odds API monthly quota.

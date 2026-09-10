@@ -84,6 +84,41 @@ def _ai_assess(leg: dict, news: str = "") -> tuple[float, str]:
         return implied, f"implied {implied} (AI error: {e})"
 
 
+def _norm_team(name: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def _match_key(leg: dict) -> str:
+    """Source-independent match key: date + normalized teams."""
+    ct = str(leg.get("commence_time", ""))[:10]
+    return f"{ct}|{_norm_team(leg.get('home_team'))}|{_norm_team(leg.get('away_team'))}"
+
+
+def _same_match(a: dict, b: dict) -> bool:
+    if _match_key(a) == _match_key(b):
+        return True
+    if str(a.get("commence_time", ""))[:10] != str(b.get("commence_time", ""))[:10]:
+        return False
+    ha, aa = _norm_team(a.get("home_team")), _norm_team(a.get("away_team"))
+    hb, ab = _norm_team(b.get("home_team")), _norm_team(b.get("away_team"))
+    return bool(ha and hb and aa and ab) and (ha in hb or hb in ha) and (aa in ab or ab in aa)
+
+
+def _merge_legs(primary: list, secondary: list) -> list:
+    """Merge leg lists; secondary wins same (match, market) ties (sharper price).
+    Same-match different-market legs are all kept (guarded at ticket assembly)."""
+    merged = list(primary)
+    for leg in secondary:
+        dup = next((m for m in merged
+                    if str(m.get("market", "1X2")) == str(leg.get("market", "1X2"))
+                    and _same_match(m, leg)), None)
+        if dup:
+            merged.remove(dup)
+        merged.append(leg)
+    return merged
+
+
 def scan_and_extract(max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
     window_h = config.KICKOFF_HOURS_WEEKLY if kind == "weekly" else config.KICKOFF_HOURS_DAILY
     filt = _scan_filter()
@@ -112,15 +147,32 @@ def scan_and_extract(max_credits: int | None = None, progress_cb=None, kind: str
             except ImportError:
                 from worker.sofa_odds import scan_sofa_soccer  # type: ignore
             sofa_results = scan_sofa_soccer(soccer_keys, hours_ahead=window_h,
-                                            callback=progress_cb, log=progress_cb)
+                                            callback=progress_cb, log=progress_cb,
+                                            markets=config.SOFA_MARKETS)
             if sofa_results:
                 legs = OddsScanner().extract_legs(sofa_results, min_odds=config.MIN_ODDS,
                                                   max_odds=config.MAX_ODDS)
                 sofa_ok = bool(legs)
         except Exception as e:
             if progress_cb:
-                progress_cb(f"SofaScore failed ({e}), trying Odds API fallback.")
-    if sofa_ok:
+                progress_cb(f"SofaScore failed ({e}), trying next source.")
+    # 1b. Second free source: Smarkets exchange (sharper, wins ties on merge).
+    if config.SMARKETS_ON:
+        try:
+            try:
+                from smarkets_odds import scan_smarkets
+            except ImportError:
+                from worker.smarkets_odds import scan_smarkets  # type: ignore
+            smk_legs = scan_smarkets(hours_ahead=window_h, callback=progress_cb, log=progress_cb)
+            if smk_legs:
+                smk_legs = OddsScanner().extract_legs(
+                    {"soccer_smarkets": smk_legs}, min_odds=config.MIN_ODDS,
+                    max_odds=config.MAX_ODDS)
+                legs = _merge_legs(legs, smk_legs)
+        except Exception as e:
+            if progress_cb:
+                progress_cb(f"Smarkets failed ({e}), continuing.")
+    if legs:
         return legs
     # 2. Paid fallback: Odds API, guarded by quota floor (free get_sports call first).
     s = OddsScanner()
@@ -248,7 +300,13 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     candidates = diverse[: max(12, max_legs * 2)]
 
     built = []
-    for leg in candidates[:max_legs]:
+    picked = []  # raw legs already in ticket (same-match guard: one market per match)
+    for leg in candidates:
+        if len(built) >= max_legs:
+            break
+        if any(_same_match(leg, p) for p in picked):
+            continue
+        picked.append(leg)
         _enrich_with_fotmob(leg)
         news = ""
         if use_ai and os.environ.get("TAVILY_API_KEY"):
@@ -265,6 +323,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             "sport": leg.get("sport", leg.get("sport_key", "")),
             "sport_key": leg.get("sport_key", ""),
             "league": leg.get("league", ""),
+            "market": leg.get("market", "1X2"),
             "match": f"{leg.get('home_team','?')} vs {leg.get('away_team','?')}",
             "selection": selection,
             "odds": round(odds, 3),

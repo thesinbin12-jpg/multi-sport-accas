@@ -257,8 +257,8 @@ class OddsScanner:
                 away = event.get("away_team", "?")
                 commence = event.get("commence_time", "")
                 
-                # Parse league name from sport_key
-                league = sport_key.replace("_", " ").title()
+                # Parse league name from sport_key (or keep source label)
+                league = event.get("league") or sport_key.replace("_", " ").title()
                 
                 # Collect all outcomes across bookmakers for h2h
                 all_outcomes = {}
@@ -298,6 +298,8 @@ class OddsScanner:
                 if best_price and min_odds <= best_price <= max_odds:
                     legs.append({
                         "id": event.get("id"),
+                        "match_id": event.get("match_id"),
+                        "market": event.get("market", "1X2"),
                         "sport_key": sport_key,
                         "sport": event.get("sport_title", sport_key),
                         "league": league,
