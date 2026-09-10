@@ -46,7 +46,8 @@ SCHEMA_SQL = [
         combined_odds REAL NOT NULL DEFAULT 1.0,
         legs TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL DEFAULT 'pending',
-        kind TEXT NOT NULL DEFAULT 'daily'
+        kind TEXT NOT NULL DEFAULT 'daily',
+        stake TEXT NOT NULL DEFAULT '{}'
     )
     """,
     """
@@ -96,8 +97,9 @@ def init_schema() -> None:
                     # postgres needs SERIAL instead of AUTOINCREMENT — make compatible
                     pq = q.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
                     cur.execute(pq)
-                # migrate pre-kind tables
+                # migrate pre-kind/pre-stake tables
                 cur.execute("ALTER TABLE acca_tickets ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'daily'")
+                cur.execute("ALTER TABLE acca_tickets ADD COLUMN IF NOT EXISTS stake TEXT DEFAULT '{}'")
                 conn.commit()
             finally:
                 conn.close()
@@ -109,6 +111,8 @@ def init_schema() -> None:
             cols = [r[1] for r in cur.execute("PRAGMA table_info(acca_tickets)").fetchall()]
             if "kind" not in cols:
                 cur.execute("ALTER TABLE acca_tickets ADD COLUMN kind TEXT DEFAULT 'daily'")
+            if "stake" not in cols:
+                cur.execute("ALTER TABLE acca_tickets ADD COLUMN stake TEXT DEFAULT '{}'")
             conn.commit()
 
 
@@ -118,8 +122,9 @@ def _now() -> str:
 
 # ---- tickets ----
 
-def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = "pending", kind: str = "daily") -> None:
+def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = "pending", kind: str = "daily", stake: dict | None = None) -> None:
     kind = kind if kind in ("daily", "weekly") else "daily"
+    stake_json = json.dumps(stake or {})
     init_schema()
     with _lock:
         if _is_postgres():
@@ -127,10 +132,10 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "INSERT INTO acca_tickets (id, created_at, combined_odds, legs, status, kind) "
-                    "VALUES (%s, %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (id) DO UPDATE SET combined_odds=EXCLUDED.combined_odds, legs=EXCLUDED.legs, status=EXCLUDED.status, kind=EXCLUDED.kind",
-                    (ticket_id, _now(), float(combined_odds), json.dumps(legs), status, kind),
+                    "INSERT INTO acca_tickets (id, created_at, combined_odds, legs, status, kind, stake) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO UPDATE SET combined_odds=EXCLUDED.combined_odds, legs=EXCLUDED.legs, status=EXCLUDED.status, kind=EXCLUDED.kind, stake=EXCLUDED.stake",
+                    (ticket_id, _now(), float(combined_odds), json.dumps(legs), status, kind, stake_json),
                 )
                 cur.execute("DELETE FROM acca_legs WHERE ticket_id = %s", (ticket_id,))
                 for leg in legs:
@@ -147,8 +152,8 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
         else:
             conn = _sqlite_conn()
             cur = conn.cursor()
-            _execute(cur, "INSERT OR REPLACE INTO acca_tickets (id, created_at, combined_odds, legs, status, kind) VALUES (%s,%s,%s,%s,%s,%s)",
-                     (ticket_id, _now(), float(combined_odds), json.dumps(legs), status, kind))
+            _execute(cur, "INSERT OR REPLACE INTO acca_tickets (id, created_at, combined_odds, legs, status, kind, stake) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                     (ticket_id, _now(), float(combined_odds), json.dumps(legs), status, kind, stake_json))
             _execute(cur, "DELETE FROM acca_legs WHERE ticket_id = %s", (ticket_id,))
             for leg in legs:
                 _execute(cur, "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -168,7 +173,7 @@ def get_tickets(limit: int = 20, kind: str | None = None) -> list:
             conn = _pg_conn()
             try:
                 cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                cur.execute(f"SELECT id, created_at, combined_odds, legs, status, kind FROM acca_tickets {where} ORDER BY created_at DESC LIMIT %s", (*params, limit))
+                cur.execute(f"SELECT id, created_at, combined_odds, legs, status, kind, stake FROM acca_tickets {where} ORDER BY created_at DESC LIMIT %s", (*params, limit))
                 rows = cur.fetchall()
                 out = []
                 for r in rows:
@@ -178,25 +183,34 @@ def get_tickets(limit: int = 20, kind: str | None = None) -> list:
                             legs = json.loads(legs)
                         except Exception:
                             legs = []
+                    try:
+                        stake = json.loads(r["stake"]) if isinstance(r["stake"], str) else (r["stake"] or {})
+                    except Exception:
+                        stake = {}
                     out.append({"id": r["id"], "created_at": r["created_at"],
                                 "combined_odds": float(r["combined_odds"]), "legs": legs, "status": r["status"],
-                                "kind": r.get("kind") or "daily"})
+                                "kind": r.get("kind") or "daily", "stake": stake})
                 return out
             finally:
                 conn.close()
         else:
             conn = _sqlite_conn()
             cur = conn.cursor()
-            _execute(cur, f"SELECT id, created_at, combined_odds, legs, status, kind FROM acca_tickets {where} ORDER BY created_at DESC LIMIT %s", (*params, limit))
+            _execute(cur, f"SELECT id, created_at, combined_odds, legs, status, kind, stake FROM acca_tickets {where} ORDER BY created_at DESC LIMIT %s", (*params, limit))
             out = []
             for r in cur.fetchall():
                 try:
                     legs = json.loads(r["legs"])
                 except Exception:
                     legs = []
+                cols = r.keys()
+                try:
+                    stake = json.loads(r["stake"]) if "stake" in cols and isinstance(r["stake"], str) else {}
+                except Exception:
+                    stake = {}
                 out.append({"id": r["id"], "created_at": r["created_at"],
                             "combined_odds": float(r["combined_odds"]), "legs": legs, "status": r["status"],
-                            "kind": (r["kind"] if "kind" in r.keys() else None) or "daily"})
+                            "kind": (r["kind"] if "kind" in cols else None) or "daily", "stake": stake})
             return out
 
 

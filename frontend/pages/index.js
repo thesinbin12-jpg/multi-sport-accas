@@ -241,6 +241,7 @@ export default function Home() {
 function Slip({ ticket, index, open, onToggle }) {
   const st = ticket.status || 'pending';
   const legs = ticket.legs || [];
+  const stake = ticket.stake || {};
   return (
     <article className={`slip slip-${st}`}>
       <button className="slip-top" onClick={onToggle} aria-expanded={open}>
@@ -249,6 +250,12 @@ function Slip({ ticket, index, open, onToggle }) {
           <span className="slip-meta">
             {fmtDate(ticket.created_at)} · {legs.length} leg{legs.length === 1 ? '' : 's'} · #{shortId(ticket.id)}
           </span>
+          {stake.units != null && (
+            <span className="slip-stake">
+              Stake {stake.units}u{stake.confidence != null ? ` · ${Math.round(stake.confidence * 100)}% confidence` : ''}
+              {stake.note ? ` — ${stake.note}` : ''}
+            </span>
+          )}
         </div>
         <div className="slip-right">
           <span className={`pill pill-${st}`}>{st}</span>

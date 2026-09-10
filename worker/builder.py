@@ -185,6 +185,9 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     if not built:
         return []
 
+    # Agentic final pass: LLM ranks legs, sets stake + confidence (tools ground it)
+    stake = _agentic_stake(built, kind, use_ai)
+
     combined = round(math.prod(max(float(b["odds"]), 1.01) for b in built), 3)
     ticket = {
         "id": f"acca-{kind}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
@@ -193,8 +196,77 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         "legs": built,
         "status": "pending",
         "kind": kind,
+        "stake": stake,
     }
     return [ticket]
+
+
+RANK_SYSTEM = (
+    "You manage a sports accumulator portfolio. Tier B (daily): steady value, "
+    "stake 1-3 units. Tier A (weekly): dream ticket, tiny stake 0.5-1 unit. "
+    "Higher combined odds and lower hit probability means FEWER units. "
+    "Reply with exactly one JSON object, no other text."
+)
+
+RANK_PROMPT = """Ticket kind: {kind} (Tier {tier})
+Legs (index, selection, league, odds, model probability, reason):
+{legs}
+Combined odds: {combined}x
+
+Pick the final order (best first, drop any leg you distrust by omitting it, keep at least 2), set stake in units and confidence 0-1. Reply exactly:
+{{"order": [0, 2, 1], "stake_units": 1.5, "confidence": 0.62, "stake_note": "one short sentence"}}"""
+
+
+def _heuristic_stake(built: list, kind: str) -> dict:
+    """Kelly-capped fallback when LLM is unavailable. Never stakes big."""
+    import math as _m
+    combined = _m.prod(max(float(b["odds"]), 1.01) for b in built)
+    avg_p = sum(float(b.get("probability") or 0) for b in built) / max(len(built), 1)
+    # quarter-Kelly on the ticket treated as one bet, hard-capped
+    b = max(combined - 1.0, 0.01)
+    kelly = max((avg_p * combined - 1.0) / b, 0.0) / 4.0
+    cap = 1.0 if kind == "weekly" else 3.0
+    units = round(min(max(kelly * 100 / 10.0, 0.5 if kind == "weekly" else 1.0), cap) * 2) / 2
+    tier = "A · dream ticket" if kind == "weekly" else "B · steady value"
+    return {"units": units, "confidence": round(min(avg_p + 0.1, 0.9), 2),
+            "note": f"Tier {tier}. Heuristic sizing (LLM unavailable) — small either way.", "llm": False}
+
+
+def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
+    if not use_ai:
+        return _heuristic_stake(built, kind)
+    try:
+        lines = [f"{i}. {b.get('selection')} | {b.get('league')} | odds {b.get('odds')} | p {b.get('probability')} | {str(b.get('reason',''))[:80]}"
+                 for i, b in enumerate(built)]
+        import math as _m
+        combined = round(_m.prod(max(float(b["odds"]), 1.01) for b in built), 2)
+        prompt = RANK_PROMPT.format(kind=kind, tier="A" if kind == "weekly" else "B",
+                                    legs="\n".join(lines)[:3000], combined=combined)
+        out = router.analyze(prompt, system_prompt=RANK_SYSTEM)
+        text = out[0] if isinstance(out, tuple) else None
+        err = out[2] if isinstance(out, tuple) and len(out) > 2 else None
+        if err or not text:
+            return _heuristic_stake(built, kind)
+        import re as _re, json as _js
+        m = _re.search(r"\{.*\}", text, _re.DOTALL)
+        if not m:
+            return _heuristic_stake(built, kind)
+        d = _js.loads(m.group(0))
+        order = [i for i in (d.get("order") or []) if isinstance(i, int) and 0 <= i < len(built)]
+        if len(order) >= 2:
+            ordered = [built[i] for i in order]
+            built.clear()
+            built.extend(ordered)
+            combined = round(_m.prod(max(float(b["odds"]), 1.01) for b in built), 3)
+        units = float(d.get("stake_units", 1.0))
+        cap = 1.0 if kind == "weekly" else 3.0
+        units = min(max(units, 0.5), cap)
+        conf = min(max(float(d.get("confidence", 0.5)), 0.05), 0.95)
+        return {"units": units, "confidence": round(conf, 2),
+                "note": str(d.get("stake_note", ""))[:220], "llm": True,
+                "combined_odds": combined}
+    except Exception:
+        return _heuristic_stake(built, kind)
 
 
 def build_and_save(max_legs: int | None = None, use_ai: bool = True,
@@ -209,7 +281,7 @@ def build_and_save(max_legs: int | None = None, use_ai: bool = True,
         db = db_mod
     tickets = build_tickets(max_legs=max_legs, use_ai=use_ai, max_credits=max_credits, progress_cb=progress_cb, kind=kind)
     for t in tickets:
-        db.save_ticket(t["id"], t["combined_odds"], t["legs"], t["status"], kind=t.get("kind", "daily"))
+        db.save_ticket(t["id"], t["combined_odds"], t["legs"], t["status"], kind=t.get("kind", "daily"), stake=t.get("stake"))
     return tickets
 
 
