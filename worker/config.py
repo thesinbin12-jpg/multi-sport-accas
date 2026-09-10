@@ -19,6 +19,10 @@ DATABASE_URL = _get("DATABASE_URL")
 FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
 
 # Worker settings
+# Odds sources: SofaScore self-fetcher is primary (free, keyless, zero quota).
+# The Odds API (paid quota) is fallback only, guarded by ODDS_MIN_FLOOR.
+SOFA_PRIMARY = _get("SOFA_PRIMARY", "1") == "1"
+ODDS_MIN_FLOOR = int(_get("ODDS_MIN_CREDITS_FLOOR", "50"))
 # Scan focus: comma-separated groups (soccer,basketball) and/or sport keys.
 # Empty = all groups. Narrow this to stretch the Odds API monthly quota.
 SCAN_FOCUS = _get("SCAN_FOCUS", "")

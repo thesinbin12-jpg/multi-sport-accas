@@ -84,12 +84,59 @@ def _ai_assess(leg: dict, news: str = "") -> tuple[float, str]:
         return implied, f"implied {implied} (AI error: {e})"
 
 
-def scan_and_extract(max_credits: int | None = None, progress_cb=None) -> list:
-    s = OddsScanner()
+def scan_and_extract(max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
+    window_h = config.KICKOFF_HOURS_WEEKLY if kind == "weekly" else config.KICKOFF_HOURS_DAILY
     filt = _scan_filter()
+    try:
+        from scanner import SCAN_CONFIG
+    except ImportError:
+        from worker.scanner import SCAN_CONFIG  # type: ignore
+    if filt:
+        soccer_keys = [k for keys in filt.values() for k in keys
+                       if k in SCAN_CONFIG.get("soccer", [])]
+    else:
+        soccer_keys = list(SCAN_CONFIG.get("soccer", []))
+    try:
+        from sofa_odds import SOFA_LEAGUES
+    except ImportError:
+        from worker.sofa_odds import SOFA_LEAGUES  # type: ignore
+    soccer_keys = [k for k in soccer_keys if k in SOFA_LEAGUES]
+
+    legs = []
+    # 1. Free primary: SofaScore self-fetcher (zero quota). Non-soccer keys skip it.
+    sofa_ok = False
+    if config.SOFA_PRIMARY and soccer_keys:
+        try:
+            try:
+                from sofa_odds import scan_sofa_soccer
+            except ImportError:
+                from worker.sofa_odds import scan_sofa_soccer  # type: ignore
+            sofa_results = scan_sofa_soccer(soccer_keys, hours_ahead=window_h,
+                                            callback=progress_cb, log=progress_cb)
+            if sofa_results:
+                legs = OddsScanner().extract_legs(sofa_results, min_odds=config.MIN_ODDS,
+                                                  max_odds=config.MAX_ODDS)
+                sofa_ok = bool(legs)
+        except Exception as e:
+            if progress_cb:
+                progress_cb(f"SofaScore failed ({e}), trying Odds API fallback.")
+    if sofa_ok:
+        return legs
+    # 2. Paid fallback: Odds API, guarded by quota floor (free get_sports call first).
+    s = OddsScanner()
+    try:
+        s.get_sports()  # free, refreshes credits_remaining from headers
+        remaining = s.credits_remaining
+        if remaining is not None and remaining < config.ODDS_MIN_FLOOR:
+            if progress_cb:
+                progress_cb(f"Odds API guarded: {remaining} credits left (floor "
+                            f"{config.ODDS_MIN_FLOOR}), skipping paid scan.")
+            return legs
+    except Exception:
+        pass
     results = s.scan_all(sports_filter=filt,
                          max_credits=(max_credits or config.MAX_CREDITS_PER_SCAN), callback=progress_cb)
-    legs = s.extract_legs(results, min_odds=config.MIN_ODDS, max_odds=config.MAX_ODDS)
+    legs = legs + s.extract_legs(results, min_odds=config.MIN_ODDS, max_odds=config.MAX_ODDS)
     return legs
 
 
@@ -139,7 +186,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     weekly = (kind == "weekly")
     max_legs = max_legs or (8 if weekly else config.MAX_LEGS_PER_ACCA)
     max_legs = max(2, min(int(max_legs), 20))  # hard cap 20, never forced: rank pass can trim
-    legs = scan_and_extract(max_credits=max_credits, progress_cb=progress_cb)
+    legs = scan_and_extract(max_credits=max_credits, progress_cb=progress_cb, kind=kind)
 
     if not legs:
         return []
