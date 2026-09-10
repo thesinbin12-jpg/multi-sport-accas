@@ -1,2 +1,5 @@
 BUILD_PROMPT.txt
 MEMORY.md
+*.db
+*.sqlite
+__pycache__/
