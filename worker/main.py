@@ -113,6 +113,32 @@ def verify():
         return {"ok": False, "error": str(e)}
 
 
+@app.post("/learn")
+def learn():
+    """Nightly learner: verify + find patterns + save debrief. Safe daily."""
+    try:
+        try:
+            import learner
+        except ImportError:
+            from worker import learner  # type: ignore
+        return learner.nightly_learn()
+    except Exception as e:
+        return {"ok": False, "error": f"{e}\n{traceback.format_exc(limit=3)}"}
+
+
+@app.get("/insights")
+def insights():
+    """Latest debrief + accuracy + strategy for the frontend."""
+    try:
+        try:
+            import learner
+        except ImportError:
+            from worker import learner  # type: ignore
+        return learner.latest_insights()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=config.PORT)

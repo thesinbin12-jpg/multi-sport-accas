@@ -129,6 +129,24 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
 
     # Prefer mid-odds value zone first, then fill
     diverse.sort(key=lambda l: abs(float(l.get("best_odds", 2.0)) - 2.2))
+    # Learner strategy: skip cold leagues, prefer proven odds band (never breaks builds)
+    try:
+        from learner import get_strategy
+    except ImportError:
+        try:
+            from worker.learner import get_strategy  # type: ignore
+        except ImportError:
+            get_strategy = None  # type: ignore
+    if get_strategy:
+        try:
+            strat = get_strategy() or {}
+            blocked = set(str(x).lower() for x in (strat.get("blocked_leagues") or []))
+            if blocked:
+                kept = [l for l in diverse if str(l.get("league", "")).lower() not in blocked]
+                if kept:
+                    diverse = kept
+        except Exception:
+            pass
     candidates = diverse[: max(12, max_legs * 2)]
 
     built = []
