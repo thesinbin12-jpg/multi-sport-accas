@@ -1,8 +1,9 @@
 export default async function handler(req, res) {
   const base = process.env.WORKER_URL || 'http://localhost:8000';
   const limit = req.query.limit || '20';
+  const kind = req.query.kind && ['daily', 'weekly'].includes(req.query.kind) ? `&kind=${req.query.kind}` : '';
   try {
-    const r = await fetch(`${base}/accas?limit=${encodeURIComponent(limit)}`);
+    const r = await fetch(`${base}/accas?limit=${encodeURIComponent(limit)}${kind}`);
     const j = await r.json();
     return res.status(r.status).json(j);
   } catch (e) {

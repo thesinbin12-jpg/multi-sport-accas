@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 
 const FILTERS = ['All', 'Pending', 'Won', 'Lost'];
+const KINDS = [
+  { id: 'daily', label: 'Daily', blurb: '4–6 legs, best value today. Settles fast.' },
+  { id: 'weekly', label: 'Weekly', blurb: 'Up to 8 legs, bigger odds, settles over the week.' },
+];
 
 function shortId(id) {
   return String(id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '—';
@@ -18,7 +22,12 @@ function fmtOdds(x) {
   return isNaN(n) ? '—' : n.toFixed(2);
 }
 
+function todayName() {
+  return new Date().toLocaleDateString('en-GB', { weekday: 'long' });
+}
+
 export default function Home() {
+  const [kind, setKind] = useState('daily');
   const [tickets, setTickets] = useState([]);
   const [status, setStatus] = useState({ status: 'idle', message: 'Worker idle', tickets_in_db: 0 });
   const [building, setBuilding] = useState(false);
@@ -39,9 +48,14 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    setOpenId(null);
+    fetchTickets(kind);
+  }, [kind]);
+
   async function refreshAll() {
     setLoading(true);
-    await Promise.all([fetchTickets(), fetchStatus()]);
+    await Promise.all([fetchTickets(kind), fetchStatus()]);
     setLoading(false);
   }
 
@@ -56,9 +70,9 @@ export default function Home() {
     }
   }
 
-  async function fetchTickets() {
+  async function fetchTickets(k) {
     try {
-      const res = await fetch('/api/accas');
+      const res = await fetch(`/api/accas?kind=${k || kind}`);
       const data = await res.json();
       if (data.ok || Array.isArray(data.tickets)) setTickets(data.tickets || []);
     } catch (e) {}
@@ -71,7 +85,7 @@ export default function Home() {
       const res = await fetch('/api/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ kind }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Build rejected (${res.status})`);
@@ -84,7 +98,7 @@ export default function Home() {
             clearInterval(buildPollRef.current);
             setBuilding(false);
             if (s.status === 'error') setError(s.message || 'Build failed');
-            fetchTickets();
+            fetchTickets(kind);
           }
         } catch (e) {
           clearInterval(buildPollRef.current);
@@ -111,6 +125,7 @@ export default function Home() {
   const best = tickets.length
     ? Math.max(...tickets.map((t) => Number(t.combined_odds) || 0))
     : 0;
+  const activeKind = KINDS.find((k) => k.id === kind);
 
   return (
     <div className="page">
@@ -128,8 +143,7 @@ export default function Home() {
         </div>
         <p className="dateline">
           {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
-          {' · '}{tickets.length} slip{tickets.length === 1 ? '' : 's'} on file
-          {totalLegs ? ` · ${totalLegs} legs tracked` : ''}
+          {' · '}{status.tickets_in_db ?? tickets.length} slip{(status.tickets_in_db ?? tickets.length) === 1 ? '' : 's'} on file
         </p>
       </header>
 
@@ -142,21 +156,35 @@ export default function Home() {
 
       <section className="sheet">
         <div className="sheet-copy">
-          <h2 className="sheet-head">Saturday&rsquo;s value, on one slip.</h2>
+          <h2 className="sheet-head">{todayName()}&rsquo;s value, on one slip.</h2>
           <p className="sheet-sub">
             Scans 177 leagues across football, basketball, tennis and more, prices each leg
             with AI, and keeps the best-value combination.
-            {best > 0 ? ` Best on file pays ${fmtOdds(best)}x.` : ' No slips filed yet.'}
+            {best > 0 ? ` Best ${kind} on file pays ${fmtOdds(best)}x.` : ` No ${kind} slips filed yet.`}
           </p>
+          <div className="kinds" role="tablist" aria-label="Slip type">
+            {KINDS.map((k) => (
+              <button
+                key={k.id}
+                role="tab"
+                aria-selected={kind === k.id}
+                className={kind === k.id ? 'kind kind-active' : 'kind'}
+                onClick={() => { setKind(k.id); setFilter('All'); }}
+              >
+                <span className="kind-label">{k.label}</span>
+                <span className="kind-blurb">{k.blurb}</span>
+              </button>
+            ))}
+          </div>
         </div>
         <div className="sheet-action">
           <button className="build" onClick={build} disabled={building || workerDown}>
-            {building ? 'Scanning odds…' : 'File a new slip'}
+            {building ? 'Scanning odds…' : `File a ${kind} slip`}
           </button>
           <p className="sheet-note">
             {building
               ? status.message || 'Working…'
-              : 'Manual trigger only. Takes about a minute. No staking.'}
+              : `Manual trigger only. Takes about a minute. No staking. ${activeKind.blurb}`}
           </p>
           {error && <p className="sheet-error">{error}</p>}
         </div>
@@ -184,10 +212,10 @@ export default function Home() {
         )}
         {!loading && visible.length === 0 && (
           <div className="empty">
-            <h3>{filter === 'All' ? 'The ledger is empty.' : `No ${filter.toLowerCase()} slips.`}</h3>
+            <h3>{filter === 'All' ? `No ${kind} slips yet.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
             <p>
               {filter === 'All'
-                ? 'File your first slip above. It will appear here with every leg priced.'
+                ? `File your first ${kind} slip above. It will appear here with every leg priced.`
                 : 'Try another filter, or file a fresh slip.'}
             </p>
           </div>

@@ -39,11 +39,13 @@ class BuildRequest(BaseModel):
     max_legs: int | None = None
     use_ai: bool = True
     max_credits: int | None = None
+    kind: str = "daily"  # daily | weekly
 
 
-def _run_build(max_legs, use_ai, max_credits):
+def _run_build(max_legs, use_ai, max_credits, kind="daily"):
+    kind = kind if kind in ("daily", "weekly") else "daily"
     _set_state(status="running", started_at=datetime.now(timezone.utc).isoformat(),
-               message="scanning odds…", error=None)
+               message=f"scanning odds for {kind} slip…", error=None)
     try:
         import builder
 
@@ -51,7 +53,7 @@ def _run_build(max_legs, use_ai, max_credits):
             _set_state(message=msg)
 
         tickets = builder.build_and_save(max_legs=max_legs, use_ai=use_ai,
-                                         max_credits=max_credits, progress_cb=progress)
+                                         max_credits=max_credits, progress_cb=progress, kind=kind)
         with _state_lock:
             BUILD_STATE.update(status="done", finished_at=datetime.now(timezone.utc).isoformat(),
                                tickets_built=len(tickets),
@@ -74,17 +76,20 @@ def status():
     with _state_lock:
         s = dict(BUILD_STATE)
     try:
-        s["tickets_in_db"] = db.count_tickets()
+        n = db.count_tickets()
+        s["tickets_in_db"] = n
         s["accuracy"] = db.get_accuracy_stats()
+        if s.get("message") == "never built" and n > 0:
+            s["message"] = f"{n} slip(s) on file"
     except Exception as e:
         s["db_error"] = str(e)
     return s
 
 
 @app.get("/accas")
-def accas(limit: int = 20):
+def accas(limit: int = 20, kind: str | None = None):
     try:
-        tickets = db.get_tickets(limit=limit)
+        tickets = db.get_tickets(limit=limit, kind=kind)
         return {"ok": True, "count": len(tickets), "tickets": tickets,
                 "accuracy": db.get_accuracy_stats()}
     except Exception as e:
@@ -96,11 +101,12 @@ def build(req: BuildRequest, background: BackgroundTasks):
     with _state_lock:
         if BUILD_STATE["status"] == "running":
             return {"ok": False, "error": "build already running", "state": dict(BUILD_STATE)}
+    kind = req.kind if req.kind in ("daily", "weekly") else "daily"
     background.add_task(_run_build, req.max_legs or config.MAX_LEGS_PER_ACCA,
-                        req.use_ai, req.max_credits or config.MAX_CREDITS_PER_SCAN)
-    _set_state(status="running", message="build queued…", error=None,
+                        req.use_ai, req.max_credits or config.MAX_CREDITS_PER_SCAN, kind)
+    _set_state(status="running", message=f"{kind} build queued…", error=None,
                started_at=datetime.now(timezone.utc).isoformat())
-    return {"ok": True, "message": "build started"}
+    return {"ok": True, "message": f"{kind} build started"}
 
 
 @app.post("/verify")

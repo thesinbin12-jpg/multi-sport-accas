@@ -110,9 +110,14 @@ def _enrich_with_fotmob(leg: dict) -> dict:
 
 
 def build_tickets(max_legs: int | None = None, use_ai: bool = True,
-                  max_credits: int | None = None, progress_cb=None) -> list:
-    """Build accumulator ticket(s). Returns list of ticket dicts (also persisted by caller or main)."""
-    max_legs = max_legs or config.MAX_LEGS_PER_ACCA
+                  max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
+    """Build accumulator ticket(s). kind=daily (4-6 legs, value zone ~2.2)
+    or weekly (up to 8 legs, value zone ~3.0, bigger payout)."""
+    kind = kind if kind in ("daily", "weekly") else "daily"
+    weekly = (kind == "weekly")
+    max_legs = max_legs or (8 if weekly else config.MAX_LEGS_PER_ACCA)
+    if weekly:
+        max_legs = min(max_legs, 10)
     legs = scan_and_extract(max_credits=max_credits, progress_cb=progress_cb)
 
     if not legs:
@@ -127,8 +132,9 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         seen.add(lid)
         diverse.append(leg)
 
-    # Prefer mid-odds value zone first, then fill
-    diverse.sort(key=lambda l: abs(float(l.get("best_odds", 2.0)) - 2.2))
+    # Prefer mid-odds value zone first, then fill (weekly aims higher)
+    center = 3.0 if weekly else 2.2
+    diverse.sort(key=lambda l: abs(float(l.get("best_odds", 2.0)) - center))
     # Learner strategy: skip cold leagues, prefer proven odds band (never breaks builds)
     try:
         from learner import get_strategy
@@ -181,17 +187,18 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
 
     combined = round(math.prod(max(float(b["odds"]), 1.01) for b in built), 3)
     ticket = {
-        "id": f"acca-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
+        "id": f"acca-{kind}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "combined_odds": combined,
         "legs": built,
         "status": "pending",
+        "kind": kind,
     }
     return [ticket]
 
 
 def build_and_save(max_legs: int | None = None, use_ai: bool = True,
-                   max_credits: int | None = None, progress_cb=None) -> list:
+                   max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
     """Build tickets and persist to DB. Returns ticket list."""
     import db as db_mod
     try:
@@ -200,9 +207,9 @@ def build_and_save(max_legs: int | None = None, use_ai: bool = True,
         db = db_mod
     else:
         db = db_mod
-    tickets = build_tickets(max_legs=max_legs, use_ai=use_ai, max_credits=max_credits, progress_cb=progress_cb)
+    tickets = build_tickets(max_legs=max_legs, use_ai=use_ai, max_credits=max_credits, progress_cb=progress_cb, kind=kind)
     for t in tickets:
-        db.save_ticket(t["id"], t["combined_odds"], t["legs"], t["status"])
+        db.save_ticket(t["id"], t["combined_odds"], t["legs"], t["status"], kind=t.get("kind", "daily"))
     return tickets
 
 

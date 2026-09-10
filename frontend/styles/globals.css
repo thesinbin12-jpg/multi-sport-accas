@@ -53,6 +53,12 @@ body {
 .sheet-sub { font-size: 15px; color: #3d413b; max-width: 40ch; }
 .sheet-action { border-left: 1px solid var(--line); padding-left: 24px; }
 .sheet-copy { min-width: 0; }
+.kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; }
+.kind { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.kind-label { display: block; font-weight: 700; font-size: 15px; }
+.kind-blurb { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
+.kind-active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.kind-active .kind-label { color: var(--accent-deep); }
 .build { width: 100%; padding: 15px 18px; font-size: 16px; font-weight: 650; color: #fff; background: var(--accent); border: none; border-radius: var(--radius); cursor: pointer; }
 .build:hover:not(:disabled) { background: var(--accent-deep); }
 .build:disabled { background: #9aa89d; cursor: not-allowed; }

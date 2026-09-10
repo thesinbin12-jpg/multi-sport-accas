@@ -158,8 +158,10 @@ def _extract_json(text: str) -> dict | None:
 def _all_decided_legs(limit: int = 200) -> list:
     legs = []
     for t in db.get_tickets(limit=limit):
+        kind = t.get("kind") or "daily"
         for leg in db.get_legs(t["id"]):
             if leg.get("result") in ("won", "lost"):
+                leg["kind"] = kind
                 legs.append(leg)
     return legs
 
@@ -174,10 +176,12 @@ def analyze(legs: list) -> dict:
     by_league: dict[str, list] = {}
     by_sport: dict[str, list] = {}
     by_band: dict[str, list] = {}
+    by_kind: dict[str, list] = {}
     for leg in legs:
         by_league.setdefault(leg.get("league") or "unknown", []).append(leg)
         by_sport.setdefault(leg.get("sport") or "unknown", []).append(leg)
         by_band.setdefault(_odds_band(leg.get("odds")), []).append(leg)
+        by_kind.setdefault(leg.get("kind") or "daily", []).append(leg)
 
     def pack(groups: dict) -> dict:
         out = {}
@@ -190,7 +194,8 @@ def analyze(legs: list) -> dict:
             }
         return out
 
-    return {"by_league": pack(by_league), "by_sport": pack(by_sport), "by_band": pack(by_band)}
+    return {"by_league": pack(by_league), "by_sport": pack(by_sport), "by_band": pack(by_band),
+            "by_kind": pack(by_kind)}
 
 
 def _lost_leg_sample(legs: list, n: int = 12) -> list:
@@ -222,7 +227,7 @@ Recently lost legs (revisit these for recurring causes):
 Previous debrief notes:
 {prev_notes}
 
-Decide strategy. Reply with exactly this JSON shape:
+Decide strategy, comparing daily vs weekly performance where data allows. Reply with exactly this JSON shape:
 {{
   "blocked_leagues": ["league names with >=3 settled legs and clearly cold rates, or []"],
   "preferred_band": "one of 1.4-2.0, 2.0-3.0, 3.0-5.0, 5.0+ with the best proven rate, or null",
@@ -253,6 +258,7 @@ def reason(patterns: dict, legs: list, prev_notes: str) -> dict:
         "by_league": patterns["by_league"],
         "by_sport": patterns["by_sport"],
         "by_band": patterns["by_band"],
+        "by_kind": patterns.get("by_kind", {}),
         "decided_legs": len(legs),
     }
     prompt = ANALYST_PROMPT.format(
@@ -302,6 +308,8 @@ def _save_patterns(patterns: dict, decision: dict) -> None:
         for bd, p in patterns["by_band"].items():
             rows.append(("odds_band", bd, p["sample"], p["wins"], p["rate"],
                          "prefer" if bd == decision["preferred_band"] else ""))
+        for kd, p in (patterns.get("by_kind") or {}).items():
+            rows.append(("kind", kd, p["sample"], p["wins"], p["rate"], ""))
         for kind, key, n, w, r, action in rows:
             if _is_pg():
                 _exec(cur, "INSERT INTO acca_patterns (kind, key, sample, wins, rate, action, updated_at) "
