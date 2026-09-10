@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 const FILTERS = ['All', 'Pending', 'Won', 'Lost'];
 const KINDS = [
   { id: 'daily', label: 'Daily', blurb: '4–6 legs, best value today. Settles fast.' },
-  { id: 'weekly', label: 'Weekly', blurb: 'Up to 8 legs, bigger odds, settles over the week.' },
+  { id: 'weekly', label: 'Weekly', blurb: 'Up to 20 legs, bigger odds, settles over the week.' },
 ];
 
 function shortId(id) {

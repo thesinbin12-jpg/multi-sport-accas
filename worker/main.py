@@ -36,7 +36,7 @@ def _set_state(**kw):
 
 
 class BuildRequest(BaseModel):
-    max_legs: int | None = None
+    max_legs: int | None = None  # 2..20, capped server-side
     use_ai: bool = True
     max_credits: int | None = None
     kind: str = "daily"  # daily | weekly

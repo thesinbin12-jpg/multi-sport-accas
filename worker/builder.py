@@ -116,8 +116,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     kind = kind if kind in ("daily", "weekly") else "daily"
     weekly = (kind == "weekly")
     max_legs = max_legs or (8 if weekly else config.MAX_LEGS_PER_ACCA)
-    if weekly:
-        max_legs = min(max_legs, 10)
+    max_legs = max(2, min(int(max_legs), 20))  # hard cap 20, never forced: rank pass can trim
     legs = scan_and_extract(max_credits=max_credits, progress_cb=progress_cb)
 
     if not legs:
