@@ -1,83 +1,257 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+
+const FILTERS = ['All', 'Pending', 'Won', 'Lost'];
+
+function shortId(id) {
+  return String(id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 6).toUpperCase() || '—';
+}
+
+function fmtDate(iso) {
+  if (!iso) return 'Undated';
+  const d = new Date(iso);
+  if (isNaN(d)) return 'Undated';
+  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function fmtOdds(x) {
+  const n = Number(x);
+  return isNaN(n) ? '—' : n.toFixed(2);
+}
 
 export default function Home() {
-  const [status, setStatus] = useState({ status: 'idle', message: 'never built' });
-  const [accas, setAccas] = useState([]);
-  const [accuracy, setAccuracy] = useState(null);
+  const [tickets, setTickets] = useState([]);
+  const [status, setStatus] = useState({ status: 'idle', message: 'Worker idle', tickets_in_db: 0 });
   const [building, setBuilding] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [workerDown, setWorkerDown] = useState(false);
   const [error, setError] = useState('');
+  const [filter, setFilter] = useState('All');
+  const [openId, setOpenId] = useState(null);
   const pollRef = useRef(null);
+  const buildPollRef = useRef(null);
 
-  const fetchStatus = async () => {
+  useEffect(() => {
+    refreshAll();
+    pollRef.current = setInterval(fetchStatus, 8000);
+    return () => {
+      clearInterval(pollRef.current);
+      clearInterval(buildPollRef.current);
+    };
+  }, []);
+
+  async function refreshAll() {
+    setLoading(true);
+    await Promise.all([fetchTickets(), fetchStatus()]);
+    setLoading(false);
+  }
+
+  async function fetchStatus() {
     try {
-      const r = await fetch('/api/status');
-      const j = await r.json();
-      setStatus(j);
-      if (j.status === 'done' || j.status === 'error' || j.status === 'idle') {
-        setBuilding(false);
-        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-        fetchAccas();
-      }
-    } catch (e) { /* keep polling */ }
-  };
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      setStatus(data);
+      setWorkerDown(data.status === 'error' && /unreachable/i.test(data.message || ''));
+    } catch (e) {
+      setWorkerDown(true);
+    }
+  }
 
-  const fetchAccas = async () => {
+  async function fetchTickets() {
     try {
-      const r = await fetch('/api/accas');
-      const j = await r.json();
-      if (j.ok) {
-        setAccas(j.tickets || []);
-        setAccuracy(j.accuracy || null);
-      }
-    } catch (e) { setError('Failed to load accas'); }
-  };
+      const res = await fetch('/api/accas');
+      const data = await res.json();
+      if (data.ok || Array.isArray(data.tickets)) setTickets(data.tickets || []);
+    } catch (e) {}
+  }
 
-  useEffect(() => { fetchStatus(); fetchAccas(); return () => pollRef.current && clearInterval(pollRef.current); }, []);
-
-  const startBuild = async () => {
-    setError('');
+  async function build() {
     setBuilding(true);
+    setError('');
     try {
-      const r = await fetch('/api/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-      const j = await r.json();
-      if (!j.ok && !j.forwarded) { setError(j.error || 'Build failed to start'); setBuilding(false); return; }
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(fetchStatus, 3000);
-      fetchStatus();
-    } catch (e) { setError(String(e)); setBuilding(false); }
+      const res = await fetch('/api/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Build rejected (${res.status})`);
+      clearInterval(buildPollRef.current);
+      buildPollRef.current = setInterval(async () => {
+        try {
+          const s = await (await fetch('/api/status')).json();
+          setStatus(s);
+          if (s.status === 'done' || s.status === 'error') {
+            clearInterval(buildPollRef.current);
+            setBuilding(false);
+            if (s.status === 'error') setError(s.message || 'Build failed');
+            fetchTickets();
+          }
+        } catch (e) {
+          clearInterval(buildPollRef.current);
+          setBuilding(false);
+          setError('Lost contact with worker mid-build');
+        }
+      }, 3000);
+    } catch (e) {
+      setError(e.message);
+      setBuilding(false);
+    }
+  }
+
+  const counts = {
+    All: tickets.length,
+    Pending: tickets.filter((t) => (t.status || 'pending') === 'pending').length,
+    Won: tickets.filter((t) => t.status === 'won').length,
+    Lost: tickets.filter((t) => t.status === 'lost').length,
   };
+  const visible = tickets.filter((t) =>
+    filter === 'All' ? true : (t.status || 'pending') === filter.toLowerCase()
+  );
+  const totalLegs = tickets.reduce((s, t) => s + (t.legs?.length || 0), 0);
+  const best = tickets.length
+    ? Math.max(...tickets.map((t) => Number(t.combined_odds) || 0))
+    : 0;
 
   return (
-    <main style={{ maxWidth: 900, margin: '0 auto', padding: 24, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>Multi-Sport Accumulators</h1>
-      <p>Status: <b>{status.status}</b> — {status.message || ''}</p>
-      {status.tickets_in_db != null && <p>Tickets in DB: {status.tickets_in_db}</p>}
-      {accuracy && <p>Verified: {accuracy.verified_tickets} · Won: {accuracy.won_tickets} · Acc: {(accuracy.accuracy * 100).toFixed(1)}%</p>}
-      <button onClick={startBuild} disabled={building} style={{ padding: '12px 28px', fontSize: 16, cursor: building ? 'wait' : 'pointer' }}>
-        {building ? 'Building…' : 'Build'}
+    <div className="page">
+      <header className="masthead">
+        <div className="masthead-rule" />
+        <div className="masthead-row">
+          <div>
+            <p className="kicker">Multi-sport value ledger</p>
+            <h1 className="nameplate">The Acca Ledger</h1>
+          </div>
+          <div className="worker">
+            <span className={`dot dot-${status.status || 'idle'}`} />
+            <span className="worker-text">{status.message || 'Worker idle'}</span>
+          </div>
+        </div>
+        <p className="dateline">
+          {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+          {' · '}{tickets.length} slip{tickets.length === 1 ? '' : 's'} on file
+          {totalLegs ? ` · ${totalLegs} legs tracked` : ''}
+        </p>
+      </header>
+
+      {workerDown && (
+        <div className="notice" role="alert">
+          <strong>Worker unreachable.</strong> The Render service may be asleep or
+          WORKER_URL is unset. Wake it and retry — nothing here will build until it answers.
+        </div>
+      )}
+
+      <section className="sheet">
+        <div className="sheet-copy">
+          <h2 className="sheet-head">Saturday&rsquo;s value, on one slip.</h2>
+          <p className="sheet-sub">
+            Scans 177 leagues across football, basketball, tennis and more, prices each leg
+            with AI, and keeps the best-value combination.
+            {best > 0 ? ` Best on file pays ${fmtOdds(best)}x.` : ' No slips filed yet.'}
+          </p>
+        </div>
+        <div className="sheet-action">
+          <button className="build" onClick={build} disabled={building || workerDown}>
+            {building ? 'Scanning odds…' : 'File a new slip'}
+          </button>
+          <p className="sheet-note">
+            {building
+              ? status.message || 'Working…'
+              : 'Manual trigger only. Takes about a minute. No staking.'}
+          </p>
+          {error && <p className="sheet-error">{error}</p>}
+        </div>
+      </section>
+
+      <nav className="tabs" aria-label="Filter slips">
+        {FILTERS.map((f) => (
+          <button
+            key={f}
+            className={filter === f ? 'tab tab-active' : 'tab'}
+            onClick={() => setFilter(f)}
+          >
+            {f} <span className="tab-count">{counts[f]}</span>
+          </button>
+        ))}
+      </nav>
+
+      <main className="ledger">
+        {loading && (
+          <div className="skeleton" aria-hidden="true">
+            <div className="sk-line sk-w40" />
+            <div className="sk-line" />
+            <div className="sk-line sk-w70" />
+          </div>
+        )}
+        {!loading && visible.length === 0 && (
+          <div className="empty">
+            <h3>{filter === 'All' ? 'The ledger is empty.' : `No ${filter.toLowerCase()} slips.`}</h3>
+            <p>
+              {filter === 'All'
+                ? 'File your first slip above. It will appear here with every leg priced.'
+                : 'Try another filter, or file a fresh slip.'}
+            </p>
+          </div>
+        )}
+        {visible.map((t, i) => (
+          <Slip
+            key={t.id || i}
+            ticket={t}
+            index={tickets.length - tickets.indexOf(t)}
+            open={openId === (t.id || i)}
+            onToggle={() => setOpenId(openId === (t.id || i) ? null : t.id || i)}
+          />
+        ))}
+      </main>
+
+      <footer className="colophon">
+        <p>Settled slips are verified nightly. Pending means kickoff hasn&rsquo;t arrived yet.</p>
+      </footer>
+    </div>
+  );
+}
+
+function Slip({ ticket, index, open, onToggle }) {
+  const st = ticket.status || 'pending';
+  const legs = ticket.legs || [];
+  return (
+    <article className={`slip slip-${st}`}>
+      <button className="slip-top" onClick={onToggle} aria-expanded={open}>
+        <div className="slip-id">
+          <span className="slip-no">Slip {String(index).padStart(2, '0')}</span>
+          <span className="slip-meta">
+            {fmtDate(ticket.created_at)} · {legs.length} leg{legs.length === 1 ? '' : 's'} · #{shortId(ticket.id)}
+          </span>
+        </div>
+        <div className="slip-right">
+          <span className={`pill pill-${st}`}>{st}</span>
+          <span className="pays">{fmtOdds(ticket.combined_odds)}x</span>
+          <span className="caret" aria-hidden="true">{open ? '–' : '+'}</span>
+        </div>
       </button>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      <hr style={{ margin: '24px 0' }} />
-      {accas.length === 0 && <p>No accumulators yet — hit Build.</p>}
-      {accas.map((t) => (
-        <section key={t.id} style={{ border: '1px solid #ddd', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-          <h3 style={{ margin: '0 0 4px' }}>{t.id} <span style={{ color: '#555' }}>· {t.status}</span></h3>
-          <p>Combined odds: <b>{t.combined_odds}</b> · {t.created_at}</p>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }} cellPadding={6}>
-            <thead><tr style={{ textAlign: 'left', borderBottom: '2px solid #ddd' }}>
-              <th>Match</th><th>League</th><th>Pick</th><th>Odds</th><th>Prob</th><th>Result</th>
-            </tr></thead>
-            <tbody>
-              {(t.legs || []).map((l, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid #eee' }}>
-                  <td>{l.match}</td><td>{l.league}</td><td>{l.selection}</td>
-                  <td>{l.odds}</td><td>{l.probability}</td><td>{l.result}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ))}
-    </main>
+      {open && (
+        <ol className="legs">
+          {legs.map((leg, i) => (
+            <li key={i} className="leg">
+              <div className="leg-main">
+                <span className="leg-pick">{leg.selection || 'Pick TBC'}</span>
+                <span className="leg-match">
+                  {leg.match || 'Fixture TBC'}{leg.league ? ` — ${leg.league}` : ''}
+                </span>
+              </div>
+              <div className="leg-figures">
+                {leg.probability != null && (
+                  <span className="leg-prob">{Math.round(Number(leg.probability) * 100)}%</span>
+                )}
+                <span className="leg-odds">{leg.odds != null ? `${leg.odds}` : '—'}</span>
+                {leg.result && leg.result !== 'pending' && (
+                  <span className={`leg-result leg-result-${leg.result}`}>{leg.result}</span>
+                )}
+              </div>
+            </li>
+          ))}
+          {legs.length === 0 && <li className="leg leg-empty">Leg detail not recorded for this slip.</li>}
+        </ol>
+      )}
+    </article>
   );
 }
