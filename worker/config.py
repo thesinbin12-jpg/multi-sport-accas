@@ -19,6 +19,9 @@ DATABASE_URL = _get("DATABASE_URL")
 FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
 
 # Worker settings
+# Scan focus: comma-separated groups (soccer,basketball) and/or sport keys.
+# Empty = all groups. Narrow this to stretch the Odds API monthly quota.
+SCAN_FOCUS = _get("SCAN_FOCUS", "")
 MAX_CREDITS_PER_SCAN = int(_get("MAX_CREDITS_PER_SCAN", "400"))
 MAX_LEGS_PER_ACCA = int(_get("MAX_LEGS_PER_ACCA", "6"))
 MIN_ODDS = float(_get("MIN_ODDS", "1.4"))

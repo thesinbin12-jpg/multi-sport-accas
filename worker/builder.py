@@ -86,9 +86,31 @@ def _ai_assess(leg: dict, news: str = "") -> tuple[float, str]:
 
 def scan_and_extract(max_credits: int | None = None, progress_cb=None) -> list:
     s = OddsScanner()
-    results = s.scan_all(max_credits=(max_credits or config.MAX_CREDITS_PER_SCAN), callback=progress_cb)
+    filt = _scan_filter()
+    results = s.scan_all(sports_filter=filt,
+                         max_credits=(max_credits or config.MAX_CREDITS_PER_SCAN), callback=progress_cb)
     legs = s.extract_legs(results, min_odds=config.MIN_ODDS, max_odds=config.MAX_ODDS)
     return legs
+
+
+def _scan_filter() -> dict | None:
+    """Build {group: [keys]} from SCAN_FOCUS (groups and/or raw keys). None = all."""
+    raw = (config.SCAN_FOCUS or "").strip()
+    if not raw:
+        return None
+    try:
+        from scanner import SCAN_CONFIG
+    except ImportError:
+        from worker.scanner import SCAN_CONFIG  # type: ignore
+    want = [w.strip().lower() for w in raw.split(",") if w.strip()]
+    filt: dict[str, list] = {}
+    all_keys = {k for keys in SCAN_CONFIG.values() for k in keys}
+    for w in want:
+        if w in SCAN_CONFIG:
+            filt[w] = list(SCAN_CONFIG[w])
+        elif w in all_keys:
+            filt.setdefault("custom", []).append(w)
+    return filt or None
 
 
 def _enrich_with_fotmob(leg: dict) -> dict:
