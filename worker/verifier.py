@@ -98,7 +98,7 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
     correct = 0
     decided = 0
     for leg in legs:
-        outcome = _resolve_match_winner(leg.get("match", ""), scanner, cache, days_from)
+        outcome = _resolve_match_winner(leg.get("match", ""), scanner, cache, days_from, leg)
         if outcome is None:
             continue
         decided += 1
@@ -117,11 +117,27 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
             "correct": correct, "total": total}
 
 
-def _resolve_match_winner(match: str, scanner: OddsScanner, cache: dict, days_from: int):
+def _keys_for_leg(leg: dict) -> list:
+    """Sport keys worth querying for one leg: exact key first, league match next.
+    Keeps nightly score calls to ~1-3 per leg instead of ~177."""
+    sk = (leg.get("sport_key") or "").strip()
+    if sk:
+        return [sk]
+    league = (leg.get("league") or "").strip().lower()
+    if league:
+        hits = [k for group in SCAN_CONFIG.values() for k in group
+                if k.replace("_", " ").lower() == league or league in k.replace("_", " ").lower()]
+        if hits:
+            return hits[:3]
+    return _all_sport_keys()
+
+
+def _resolve_match_winner(match: str, scanner: OddsScanner, cache: dict, days_from: int, leg: dict | None = None):
     if " vs " not in match:
         return None
     home, away = [p.strip().lower() for p in match.split(" vs ", 1)]
-    for sk in _all_sport_keys():
+    keys = _keys_for_leg(leg or {})
+    for sk in keys:
         if sk not in cache:
             try:
                 cache[sk] = scanner.get_scores(sk, days_from=days_from) or []

@@ -377,7 +377,8 @@ def nightly_learn(days_from: int = 5) -> dict:
     acc = db.get_accuracy_stats()
     db.record_accuracy(acc["verified_tickets"], acc["won_tickets"], notes="nightly learn")
 
-    header = (f"verified {verify_summary.get('checked', 0)} ticket(s) "
+    header = (f"run {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}: "
+              f"verified {verify_summary.get('checked', 0)} ticket(s) "
               f"({verify_summary.get('won', 0)}W/{verify_summary.get('lost', 0)}L, "
               f"{verify_summary.get('pending', 0)} still pending)")
     lessons = " | ".join(decision.get("lessons") or [])

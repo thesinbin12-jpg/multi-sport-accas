@@ -152,6 +152,30 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                     diverse = kept
         except Exception:
             pass
+    # Kickoff window: daily = near-term only, weekly = 7 days (missing times kept)
+    try:
+        from datetime import timedelta as _td
+        window_h = config.KICKOFF_HOURS_WEEKLY if weekly else config.KICKOFF_HOURS_DAILY
+        now = datetime.now(timezone.utc)
+        cutoff = now + _td(hours=window_h)
+
+        def _in_window(leg: dict) -> bool:
+            ct = leg.get("commence_time", "")
+            if not ct:
+                return True
+            try:
+                dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt <= cutoff
+            except Exception:
+                return True
+
+        windowed = [l for l in diverse if _in_window(l)]
+        if windowed:
+            diverse = windowed
+    except Exception:
+        pass
     candidates = diverse[: max(12, max_legs * 2)]
 
     built = []
@@ -170,6 +194,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             selection, odds = leg.get("home_team", "?"), float(leg.get("best_odds", 2.0))
         built.append({
             "sport": leg.get("sport", leg.get("sport_key", "")),
+            "sport_key": leg.get("sport_key", ""),
             "league": leg.get("league", ""),
             "match": f"{leg.get('home_team','?')} vs {leg.get('away_team','?')}",
             "selection": selection,

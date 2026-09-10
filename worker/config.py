@@ -23,6 +23,9 @@ MAX_CREDITS_PER_SCAN = int(_get("MAX_CREDITS_PER_SCAN", "400"))
 MAX_LEGS_PER_ACCA = int(_get("MAX_LEGS_PER_ACCA", "6"))
 MIN_ODDS = float(_get("MIN_ODDS", "1.4"))
 MAX_ODDS = float(_get("MAX_ODDS", "25.0"))
+# Kickoff windows: daily slips only near-term fixtures, weekly up to 7 days out
+KICKOFF_HOURS_DAILY = int(_get("KICKOFF_HOURS_DAILY", "48"))
+KICKOFF_HOURS_WEEKLY = int(_get("KICKOFF_HOURS_WEEKLY", "168"))
 PORT = int(_get("PORT", "8000"))
 
 # Frontend -> worker URL (used by Vercel API routes)
