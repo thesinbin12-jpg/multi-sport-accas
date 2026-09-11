@@ -1,10 +1,12 @@
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
   const base = process.env.WORKER_URL || 'http://localhost:8000';
+  const headers = { 'Content-Type': 'application/json' };
+  if (process.env.WORKER_SECRET) headers['x-accas-secret'] = process.env.WORKER_SECRET;
   try {
     const r = await fetch(`${base}/build`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(req.body || {}),
     });
     const j = await r.json();

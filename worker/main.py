@@ -14,17 +14,30 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import config
 import db
 
+WORKER_SECRET = os.environ.get("WORKER_SECRET", "")
+
+
+def _authed(request) -> bool:
+    """Shared-secret gate for trigger endpoints. Open only when no secret set (local dev)."""
+    if not WORKER_SECRET:
+        return True
+    try:
+        return request.headers.get("x-accas-secret", "") == WORKER_SECRET
+    except Exception:
+        return False
+
 app = FastAPI(title="multi-sport-accas worker")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://accas-roan.vercel.app", "http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -130,7 +143,9 @@ def accas(limit: int = 20, kind: str | None = None):
 
 
 @app.post("/build")
-def build(req: BuildRequest, background: BackgroundTasks):
+def build(req: BuildRequest, background: BackgroundTasks, request: Request):
+    if not _authed(request):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     with _state_lock:
         if BUILD_STATE["status"] == "running":
             return {"ok": False, "error": "build already running", "state": dict(BUILD_STATE)}
@@ -143,7 +158,9 @@ def build(req: BuildRequest, background: BackgroundTasks):
 
 
 @app.post("/verify")
-def verify():
+def verify(request: Request):
+    if not _authed(request):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     try:
         import verifier
         summary = verifier.verify_all_pending()
@@ -153,7 +170,9 @@ def verify():
 
 
 @app.post("/learn")
-def learn(background: BackgroundTasks):
+def learn(background: BackgroundTasks, request: Request):
+    if not _authed(request):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     """Nightly learner: verify + patterns + debrief (fast, sync). A spoilt weekly
     queues a fresh weekly build in the background (same 7-day logic, fewer legs)."""
     try:
