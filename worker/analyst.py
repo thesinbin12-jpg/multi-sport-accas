@@ -156,6 +156,18 @@ def get_news(home, away, league="", timeout=20):
     return ""
 
 
+def _persona_weights() -> dict:
+    """Historical reliability from the evening learner (1.0 = average). Never raises."""
+    try:
+        try:
+            from learner import get_strategy
+        except ImportError:
+            from worker.learner import get_strategy  # type: ignore
+        return dict((get_strategy() or {}).get("persona_weights") or {})
+    except Exception:
+        return {}
+
+
 def _ask(prompt, system="", max_chars=1200, tries=1):
     for attempt in range(max(1, tries)):
         try:
@@ -221,9 +233,16 @@ def analyze_finalist(leg, progress_cb=None):
         s, n = _parse_persona(t)
         verdicts.append((pname, s, n))
     scored = " | ".join(f"{n}={s:.2f} ({note[:120]})" for n, s, note in verdicts)
+    weights = _persona_weights()
+    wline = ""
+    if weights:
+        wline = ("Historical reliability weights (1.0 = average, higher = trust more, "
+                 "based on settled results): " +
+                 ", ".join(f"{k}={v}" for k, v in weights.items()) + ". ")
 
     _msg(f"Analyst: {home} vs {away} — synthesizing {len(verdicts)} verdicts…")
     synth = _ask(f"Selection: {selection} @ {odds}. Statistical base probability: {base}.\n"
+                  f"{wline}"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
                   max_chars=1500, tries=3)

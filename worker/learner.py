@@ -95,11 +95,21 @@ def init_learner_schema() -> None:
             notes TEXT DEFAULT ''
         )
         """
+        personas = """
+        CREATE TABLE IF NOT EXISTS acca_persona_stats (
+            name TEXT PRIMARY KEY,
+            n INTEGER NOT NULL DEFAULT 0,
+            brier_sum REAL NOT NULL DEFAULT 0.0,
+            hits INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         cur.execute(patterns)
         cur.execute(debrief)
+        cur.execute(personas)
         conn.commit()
     finally:
         conn.close()
@@ -210,6 +220,101 @@ def _lost_leg_sample(legs: list, n: int = 12) -> list:
     return out
 
 
+# ---- persona track record (draw-predictor per-agent accuracy, multi-market) ----
+
+def _norm_persona(name: str) -> str:
+    n = str(name or "").strip().lower()
+    n = re.sub(r"^the\s+", "", n)
+    return re.sub(r"[^a-z]+", "_", n).strip("_") or "unknown"
+
+
+def _parse_scores(analysis: str) -> dict:
+    """Extract {persona: score} from the SCORES trailer stored by analyst.py."""
+    out = {}
+    try:
+        m = re.search(r"SCORES:\s*(.+)", str(analysis or ""))
+        if not m:
+            return out
+        for part in m.group(1).split("|"):
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            out[_norm_persona(k)] = max(0.01, min(0.99, float(v)))
+    except Exception:
+        pass
+    return out
+
+
+def _score_personas(legs: list) -> dict:
+    """Brier-score every persona verdict on settled legs; persist; return weights.
+    Weight: 1.0 default (sample < 5); else clamp(mean_brier / persona_brier, 0.5, 1.5).
+    Never raises."""
+    try:
+        init_learner_schema()
+        agg: dict[str, list] = {}
+        for leg in legs:
+            res = leg.get("result")
+            if res not in ("won", "lost"):
+                continue
+            outcome = 1.0 if res == "won" else 0.0
+            for name, s in _parse_scores(leg.get("analysis") or "").items():
+                agg.setdefault(name, [0, 0.0, 0])[0] += 1
+                agg[name][1] += (s - outcome) ** 2
+                agg[name][2] += 1 if (s >= 0.5) == (outcome == 1.0) else 0
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            for name, (n, bs, h) in agg.items():
+                if _is_pg():
+                    _exec(cur, "INSERT INTO acca_persona_stats (name, n, brier_sum, hits, updated_at) "
+                               "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (name) DO UPDATE SET "
+                               "n=acca_persona_stats.n+EXCLUDED.n, brier_sum=acca_persona_stats.brier_sum+EXCLUDED.brier_sum, "
+                               "hits=acca_persona_stats.hits+EXCLUDED.hits, updated_at=EXCLUDED.updated_at",
+                          (name, n, bs, h, _now()))
+                else:
+                    cur2 = conn.cursor()
+                    _exec(cur2, "SELECT n, brier_sum, hits FROM acca_persona_stats WHERE name=%s", (name,))
+                    row = cur2.fetchone()
+                    if row:
+                        _exec(cur, "UPDATE acca_persona_stats SET n=%s, brier_sum=%s, hits=%s, updated_at=%s WHERE name=%s",
+                              (row[0] + n, row[1] + bs, row[2] + h, _now(), name))
+                    else:
+                        _exec(cur, "INSERT INTO acca_persona_stats (name, n, brier_sum, hits, updated_at) VALUES (%s,%s,%s,%s,%s)",
+                              (name, n, bs, h, _now()))
+            conn.commit()
+            _exec(cur, "SELECT name, n, brier_sum, hits FROM acca_persona_stats")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        briers = [(r[0], r[1], (r[2] / r[1]) if r[1] else 1.0) for r in rows]
+        proven = [(nm, n, b) for nm, n, b in briers if n >= 5]
+        mean_b = sum(b for _, _, b in proven) / len(proven) if proven else 0.25
+        weights = {}
+        for nm, n, b in briers:
+            weights[nm] = round(max(0.5, min(1.5, mean_b / b)), 2) if n >= 5 and b > 0 else 1.0
+        return {"weights": weights,
+                "table": [{"persona": nm, "n": n, "brier": round(b, 3),
+                             "weight": weights[nm]} for nm, n, b in briers]}
+    except Exception:
+        return {"weights": {}, "table": []}
+
+
+def _swarm_misses(legs: list, n: int = 8) -> list:
+    """Self-critique fuel: confident losers + dismissed winners."""
+    out = []
+    for leg in legs:
+        try:
+            p = float(leg.get("probability") or 0)
+        except Exception:
+            continue
+        r = leg.get("result")
+        if (r == "lost" and p >= 0.55) or (r == "won" and p < 0.45):
+            out.append({"match": leg.get("match"), "selection": leg.get("selection"),
+                        "predicted": p, "actual": r,
+                        "why": str(leg.get("analysis") or "")[:300]})
+    return out[-n:]
+
+
 # ---- step 2: reason (LLM agent) ----
 
 ANALYST_SYSTEM = (
@@ -224,6 +329,12 @@ ANALYST_PROMPT = """Settled legs statistics (ground truth, do not invent beyond 
 Recently lost legs (revisit these for recurring causes):
 {lost}
 
+Swarm self-critique (legs where the analyst swarm was confidently wrong):
+{misses}
+
+Persona track record (Brier score: lower is better; weight >1 means trusted, <1 means distrusted):
+{personas}
+
 Previous debrief notes:
 {prev_notes}
 
@@ -232,6 +343,7 @@ Decide strategy, comparing daily vs weekly performance where data allows. Reply 
   "blocked_leagues": ["league names with >=3 settled legs and clearly cold rates, or []"],
   "preferred_band": "one of 1.4-2.0, 2.0-3.0, 3.0-5.0, 5.0+ with the best proven rate, or null",
   "lessons": ["2-4 concrete lessons, each naming a league/sport/odds pattern seen in the data"],
+  "persona_notes": ["which personas to trust/distrust based on the track record above, or []"],
   "revisit": ["picks or patterns to re-examine next cycle and why"],
   "notes": "2-3 sentence human-readable nightly debrief"
 }}"""
@@ -252,7 +364,7 @@ def _heuristic_fallback(patterns: dict) -> dict:
     }
 
 
-def reason(patterns: dict, legs: list, prev_notes: str) -> dict:
+def reason(patterns: dict, legs: list, prev_notes: str, persona: dict | None = None) -> dict:
     """Ask the LLM to interpret stats and set strategy. Grounded + guarded."""
     stats = {
         "by_league": patterns["by_league"],
@@ -261,9 +373,12 @@ def reason(patterns: dict, legs: list, prev_notes: str) -> dict:
         "by_kind": patterns.get("by_kind", {}),
         "decided_legs": len(legs),
     }
+    persona = persona or {}
     prompt = ANALYST_PROMPT.format(
         stats=json.dumps(stats)[:6000],
         lost=json.dumps(_lost_leg_sample(legs))[:2500],
+        misses=json.dumps(_swarm_misses(legs))[:2500],
+        personas=json.dumps(persona.get("table") or [])[:1500],
         prev_notes=(prev_notes or "none — first debrief")[:800],
     )
     text, model = _ask_llm(prompt, ANALYST_SYSTEM)
@@ -286,6 +401,7 @@ def reason(patterns: dict, legs: list, prev_notes: str) -> dict:
         "blocked_leagues": blocked,
         "preferred_band": band,
         "lessons": list(decision.get("lessons") or [])[:6],
+        "persona_notes": list(decision.get("persona_notes") or [])[:4],
         "revisit": list(decision.get("revisit") or [])[:6],
         "notes": str(decision.get("notes") or "")[:800],
         "llm_model": model,
@@ -370,8 +486,9 @@ def nightly_learn(days_from: int = 5) -> dict:
     verify_summary = verifier.verify_all_pending(days_from=days_from)
     legs = _all_decided_legs()
     patterns = analyze(legs)
+    persona = _score_personas(legs)
     prev = _last_debrief()
-    decision = reason(patterns, legs, (prev or {}).get("notes", ""))
+    decision = reason(patterns, legs, (prev or {}).get("notes", ""), persona)
     _save_patterns(patterns, decision)
 
     acc = db.get_accuracy_stats()
@@ -393,6 +510,7 @@ def nightly_learn(days_from: int = 5) -> dict:
         "decided_legs": len(legs),
         "accuracy": acc,
         "patterns": patterns,
+        "personas": persona.get("table"),
         "decision": {k: v for k, v in decision.items()},
     }
     _save_debrief(verify_summary.get("checked", 0), summary, notes)
@@ -417,9 +535,23 @@ def get_strategy() -> dict:
                 blocked.append(key)
             if kind == "odds_band" and action == "prefer":
                 preferred = key
-        return {"blocked_leagues": blocked, "preferred_band": preferred}
+        weights: dict = {}
+        try:
+            conn2 = _conn()
+            try:
+                cur2 = conn2.cursor()
+                _exec(cur2, "SELECT name, n, brier_sum FROM acca_persona_stats")
+                for nm, n, bs in cur2.fetchall():
+                    weights[str(nm)] = 1.0 if (n or 0) < 5 or not bs else \
+                        round(max(0.5, min(1.5, 0.25 / (bs / n))), 2)
+            finally:
+                conn2.close()
+        except Exception:
+            pass
+        return {"blocked_leagues": blocked, "preferred_band": preferred,
+                "persona_weights": weights}
     except Exception:
-        return {"blocked_leagues": [], "preferred_band": None}
+        return {"blocked_leagues": [], "preferred_band": None, "persona_weights": {}}
 
 
 def latest_insights() -> dict:
