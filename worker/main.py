@@ -26,13 +26,26 @@ WORKER_SECRET = os.environ.get("WORKER_SECRET", "")
 
 
 def _authed(request) -> bool:
-    """Shared-secret gate for trigger endpoints. Open only when no secret set (local dev)."""
+    """Shared-secret gate for trigger endpoints. Open only when no secret set (local dev).
+    Accepts x-accas-secret header (frontend, curl) or HTTP Basic password
+    (cron-job.org, whose API persists auth but not custom headers)."""
     if not WORKER_SECRET:
         return True
     try:
-        return request.headers.get("x-accas-secret", "") == WORKER_SECRET
+        if request.headers.get("x-accas-secret", "") == WORKER_SECRET:
+            return True
+        import base64 as _b64
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("basic "):
+            try:
+                decoded = _b64.b64decode(auth[6:]).decode("utf-8", "ignore")
+            except Exception:
+                decoded = ""
+            if ":" in decoded and decoded.rsplit(":", 1)[1] == WORKER_SECRET:
+                return True
     except Exception:
-        return False
+        pass
+    return False
 
 app = FastAPI(title="multi-sport-accas worker")
 app.add_middleware(
