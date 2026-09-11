@@ -138,10 +138,15 @@ def _blend(data_p, implied, sample):
     return round(data_p * w + implied * (1 - w), 4), w
 
 
-def score_fixture(home, away, markets, progress_cb=None):
-    """markets: {label: [(name, price)]}. Returns [(label, name, price, blended, edge, data_why)]."""
-    hs = _with_me(team_recent_struct(home), home)
-    aws = _with_me(team_recent_struct(away), away)
+def score_fixture(home, away, markets, progress_cb=None, skip_history=False):
+    """markets: {label: [(name, price)]}. Returns [(label, name, price, blended, edge, data_why)].
+    skip_history=True: fast odds-only pass (implied + priors + popular + coverage),
+    no FDO spend — every fixture gets ranked, only finalists cost history."""
+    if skip_history:
+        hs, aws = {"matches": [], "tid": None}, {"matches": [], "tid": None}
+    else:
+        hs = _with_me(team_recent_struct(home), home)
+        aws = _with_me(team_recent_struct(away), away)
     hst = _team_stats(hs)
     ast = _team_stats(aws)
     sample = hst["gp"] + ast["gp"]
@@ -299,7 +304,7 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
 
     scored = []
 
-    def _one_fixture(item):
+    def _one_fixture(item, fast=False):
         (_hkey, _akey), fl = item
         home = fl[0].get("home_team", "?")
         away = fl[0].get("away_team", "?")
@@ -309,7 +314,7 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
         for leg in fl:
             markets.setdefault(leg.get("market", "1X2"), []).extend(_leg_outcomes(leg))
         try:
-            res = score_fixture(home, away, markets)
+            res = score_fixture(home, away, markets, skip_history=fast)
         except Exception:
             return []
         res_by_market = {}
@@ -363,8 +368,32 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
         return got
 
     import concurrent.futures as _cf
+
+    def _score_of(leg):
+        d = leg.get("_data") or (0, 0, "")
+        return d[0] + max(0, d[1]) * 0.5
+
+    # Stage 1: fast odds-only pass over EVERY fixture (no FDO spend).
+    with _cf.ThreadPoolExecutor(max_workers=8) as _ex:
+        fast_all = []
+        for got in _ex.map(lambda it: _one_fixture(it, fast=True), ranked):
+            fast_all.extend(got or [])
+    # Stage 2: full history upgrade for the top fixtures only.
+    _seen_fix, _top_keys = set(), []
+    for leg in sorted(fast_all, key=_score_of, reverse=True):
+        fk = _fixture_key(leg)
+        if fk not in _seen_fix:
+            _seen_fix.add(fk)
+            _top_keys.append(fk)
+        if len(_top_keys) >= max(1, fdo_budget):
+            break
+    _by_key = {}
+    for (hk, ak), fl in ranked:
+        _by_key.setdefault(_fixture_key(fl[0]), ((hk, ak), fl))
+    _top_items = [_by_key[k] for k in _top_keys if k in _by_key]
+    _msg(f"Scout: {len(fixtures)} fixtures fast-scored, upgrading top {len(_top_items)} with history…")
     with _cf.ThreadPoolExecutor(max_workers=5) as _ex:
-        for got in _ex.map(_one_fixture, ranked[:max(1, fdo_budget)]):
+        for got in _ex.map(lambda it: _one_fixture(it, fast=False), _top_items):
             scored.extend(got or [])
     scored.sort(key=lambda l: -((l.get("_data") or (0, 0, ""))[0] + max(0, (l.get("_data") or (0, 0, ""))[1]) * 0.5))
     cov = sum(1 for l in scored if "baseline" not in str((l.get("_data") or (0, 0, ""))[2]))

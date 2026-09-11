@@ -28,7 +28,7 @@ BETIKA_ON = _get("BETIKA_ON", "1") == "1"
 # Analyst swarm (draw-predictor 15-agent pattern, adapted multi-market):
 # deep multi-persona verdicts on shortlisted finalists only (history FDO + news Tavily->DDG).
 ANALYST_ON = _get("ANALYST_ON", "1") == "1"
-ANALYST_MAX = int(_get("ANALYST_MAX", "10"))
+ANALYST_MAX = int(_get("ANALYST_MAX", "14"))
 SMARKETS_ON = _get("SMARKETS_ON", "1") == "1"  # Smarkets exchange as 2nd free source
 ODDS_MIN_FLOOR = int(_get("ODDS_MIN_CREDITS_FLOOR", "50"))
 # Scan focus: comma-separated groups (soccer,basketball) and/or sport keys.
