@@ -87,6 +87,33 @@ SCHEMA_SQL = [
 ]
 
 
+def ping() -> None:
+    """Fail fast if DB unreachable (bad password, rotated creds, wrong host).
+    Raises ConnectionError with an actionable message. Call before any scan/API spend."""
+    if _is_postgres():
+        import urllib.parse
+        try:
+            conn = _pg_conn()
+        except Exception as e:
+            try:
+                host = urllib.parse.urlparse(config.DATABASE_URL or "").hostname or "postgres"
+            except Exception:
+                host = "postgres"
+            raise ConnectionError(
+                f"DB unreachable ({host}): {e}. "
+                "Fix: copy the pooled connection string from Neon Console -> Connect "
+                "(it is URL-encoded) into Render DATABASE_URL env, then redeploy."
+            ) from e
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        finally:
+            conn.close()
+    else:
+        init_schema()
+
+
 def init_schema() -> None:
     with _lock:
         if _is_postgres():

@@ -47,6 +47,7 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
     _set_state(status="running", started_at=datetime.now(timezone.utc).isoformat(),
                message=f"scanning odds for {kind} slip…", error=None)
     try:
+        db.ping()  # fail fast on bad/rotated DB creds BEFORE any scan/API spend
         import builder
 
         def progress(msg: str):
