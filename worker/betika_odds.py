@@ -25,6 +25,20 @@ BOOK_TITLE = "Betika"
 SUB_1X2 = "1"
 SUB_DC = "10"
 SUB_BTTS = "29"
+SUB_OU = "18"
+SUB_C12B = "35"
+SUB_COUB = "36"
+SUB_C12OU = "37"
+
+
+def _combo_token(tok):
+    t = str(tok or "").strip().upper()
+    if t in ("1", "X", "2", "YES", "NO"):
+        return t
+    m = __import__("re").match(r"(OVER|UNDER)\s+(\d+(?:\.5)?)", t)
+    if m:
+        return ("O" if m.group(1) == "OVER" else "U") + m.group(2)
+    return ""
 
 
 def _f(x):
@@ -77,41 +91,64 @@ class BetikaOdds:
 
     @staticmethod
     def _outcomes(m):
-        """(1X2 outcomes, DC outcomes, BTTS outcomes) from the odds list."""
-        o12, odc, obtts = [], [], []
+        """{suffix: outcomes} for 1X2, DC, BTTS, O/U lines, combos. Names are verifier-ready."""
+        groups: dict = {}
         for o in (m.get("odds") or []):
+            sub = str(o.get("sub_type_id", ""))
             for leg in (o.get("odds") or []):
-                key = str(leg.get("odd_key", ""))
                 disp = str(leg.get("display", ""))
                 val = _f(leg.get("odd_value"))
                 if val is None:
                     continue
-                if disp in ("1", "X", "2"):
+                if sub == SUB_1X2 and disp in ("1", "X", "2"):
                     name = {"1": m.get("home_team", "?"), "X": "Draw",
                             "2": m.get("away_team", "?")}[disp]
-                    o12.append({"name": name, "price": val})
-                elif disp in ("1X", "12", "X2", "1/X", "1/2", "X/2"):
-                    odc.append({"name": {"1/X": "1X", "X/2": "X2", "1/2": "12"}.get(disp, disp),
-                                "price": val})
-                elif disp.lower() in ("yes", "no") or key.lower() in ("yes", "no", "gg", "ng"):
-                    yn = "Yes" if disp.lower() == "yes" or key.lower() in ("yes", "gg") else "No"
-                    obtts.append({"name": f"BTTS: {yn}", "price": val})
-        return o12, odc, obtts
+                    groups.setdefault("1x2", []).append({"name": name, "price": val})
+                elif sub == SUB_DC and disp in ("1X", "12", "X2", "1/X", "1/2", "X/2"):
+                    groups.setdefault("dc", []).append(
+                        {"name": {"1/X": "1X", "X/2": "X2", "1/2": "12"}.get(disp, disp),
+                         "price": val})
+                elif sub == SUB_BTTS and disp.lower() in ("yes", "no"):
+                    yn = "Yes" if disp.lower() == "yes" else "No"
+                    groups.setdefault("btts", []).append({"name": f"BTTS: {yn}", "price": val})
+                elif sub == SUB_OU:
+                    import re as _re
+                    mt = _re.match(r"(OVER|UNDER)\s+(1\.5|2\.5|3\.5)", disp.upper())
+                    if mt:
+                        groups.setdefault("ou" + mt.group(2), []).append(
+                            {"name": f"{'Over' if mt.group(1) == 'OVER' else 'Under'} {mt.group(2)}",
+                             "price": val})
+                elif sub in (SUB_C12B, SUB_COUB, SUB_C12OU) and "&" in disp.upper():
+                    toks = [_combo_token(t) for t in disp.upper().split("&")]
+                    if all(toks) and len(toks) == 2:
+                        label = {SUB_C12B: "1X2+BTTS", SUB_COUB: "O/U+BTTS",
+                                 SUB_C12OU: "1X2+O/U"}[sub]
+                        groups.setdefault(label, []).append(
+                            {"name": "&".join(toks), "price": val})
+        return groups
 
-    def scan(self, hours_ahead=48, markets=("1X2", "DC", "BTTS"), callback=None):
+    def scan(self, hours_ahead=48, markets=("1X2", "DC", "BTTS", "O/U", "COMBO"), callback=None):
         """Returns [shaped events]. Zero quota cost."""
         out, seen = [], set()
         now = datetime.now(timezone.utc)
         cutoff = now + timedelta(hours=hours_ahead)
+        want = set(markets or ())
         subs = []
-        if "1X2" in markets:
-            subs.append((SUB_1X2, "1x2", "1X2"))
-        if "DC" in markets:
-            subs.append((SUB_DC, "dc", "Double chance"))
-        if "BTTS" in markets:
-            subs.append((SUB_BTTS, "btts", "BTTS"))
+        if "1X2" in want:
+            subs.append(SUB_1X2)
+        if "DC" in want:
+            subs.append(SUB_DC)
+        if "BTTS" in want:
+            subs.append(SUB_BTTS)
+        if "O/U" in want:
+            subs.append(SUB_OU)
+        if "COMBO" in want:
+            subs.extend([SUB_C12B, SUB_COUB, SUB_C12OU])
+        labels = {"1x2": "1X2", "dc": "Double chance", "btts": "BTTS",
+                  "ou1.5": "O/U 1.5", "ou2.5": "O/U 2.5", "ou3.5": "O/U 3.5",
+                  "1X2+BTTS": "1X2+BTTS", "O/U+BTTS": "O/U+BTTS", "1X2+O/U": "1X2+O/U"}
         n = 0
-        for sub, suffix, label in subs:
+        for sub in subs:
             page, pages = 1, 1
             while page <= pages and page <= 10:
                 ms, total = self._page(sub, page)
@@ -127,32 +164,32 @@ class BetikaOdds:
                                                "%Y-%m-%d %H:%M:%S").replace(tzinfo=EAT)
                         if dt > cutoff or dt < now - timedelta(hours=3):
                             continue
-                        o12, odc, obtts = self._outcomes(m)
-                        outcomes = {"1x2": o12, "dc": odc, "btts": obtts}[suffix]
-                        if len(outcomes) < 2:
-                            continue
+                        groups = self._outcomes(m)
                         mid = str(m.get("match_id", ""))
-                        key = (mid, suffix)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        best = max(outcomes, key=lambda o: o["price"])
                         league = f"{m.get('category', '')} {m.get('competition_name', '')}".strip()
-                        out.append({
-                            "id": f"btk-{mid}-{suffix}",
-                            "market": label,
-                            "sport_key": "soccer_betika",
-                            "sport_title": "Soccer",
-                            "league": league or "Soccer",
-                            "home_team": m.get("home_team", "?"),
-                            "away_team": m.get("away_team", "?"),
-                            "commence_time": dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "best_odds": best["price"],
-                            "best_bookmaker": BOOK_TITLE,
-                            "bookmakers": [{"key": BOOK_KEY, "title": BOOK_TITLE,
-                                            "markets": [{"key": "h2h", "outcomes": outcomes}]}],
-                        })
-                        n += 1
+                        for suffix, outcomes in groups.items():
+                            if len(outcomes) < 2:
+                                continue
+                            key = (mid, suffix)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            best = max(outcomes, key=lambda o: o["price"])
+                            out.append({
+                                "id": f"btk-{mid}-{suffix}",
+                                "market": labels.get(suffix, suffix),
+                                "sport_key": "soccer_betika",
+                                "sport_title": "Soccer",
+                                "league": league or "Soccer",
+                                "home_team": m.get("home_team", "?"),
+                                "away_team": m.get("away_team", "?"),
+                                "commence_time": dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "best_odds": best["price"],
+                                "best_bookmaker": BOOK_TITLE,
+                                "bookmakers": [{"key": BOOK_KEY, "title": BOOK_TITLE,
+                                                "markets": [{"key": "h2h", "outcomes": outcomes}]}],
+                            })
+                            n += 1
                     except Exception:
                         continue
                 page += 1
@@ -166,7 +203,7 @@ class BetikaOdds:
         return out
 
 
-def scan_betika(hours_ahead=48, markets=("1X2", "DC", "BTTS"), callback=None, log=None):
+def scan_betika(hours_ahead=48, markets=("1X2", "DC", "BTTS", "O/U", "COMBO"), callback=None, log=None):
     return BetikaOdds(log=log).scan(hours_ahead=hours_ahead, markets=markets, callback=callback)
 
 

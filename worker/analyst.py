@@ -79,51 +79,118 @@ def _implied(odds):
         return 0.5
 
 
-def get_history(home, away, league="", timeout=15):
-    """Recent form + H2H via football-data.org (free 10/min). Best-effort, '' on failure."""
-    key = getattr(_config, "FOOTBALL_DATA_ORG_KEY", "") or os.environ.get("FOOTBALL_DATA_ORG_KEY", "")
+_FDO_CACHE: dict = {}
+_FDO_LAST = [0.0]
+
+
+def _fdo_key():
+    return getattr(_config, "FOOTBALL_DATA_ORG_KEY", "") or os.environ.get("FOOTBALL_DATA_ORG_KEY", "")
+
+
+def _fdo_get(url, params, timeout=15):
+    """Cached GET with 6s spacing (FDO free tier: 10 req/min). Returns parsed JSON or None."""
+    import json as _json
+    ck = url + "|" + _json.dumps(params or {}, sort_keys=True)
+    if ck in _FDO_CACHE:
+        return _FDO_CACHE[ck]
+    key = _fdo_key()
     if not key:
-        return ""
+        return None
+    wait = 6.0 - (time.time() - _FDO_LAST[0])
+    if wait > 0:
+        time.sleep(wait)
     try:
-        h = {"X-Auth-Token": key}
-        # find team ids
-        ids = {}
-        for team in (home, away):
-            r = _rq.get(f"{_FDO_BASE}/teams", params={"name": team}, headers=h, timeout=timeout)
-            if r.status_code != 200:
-                continue
-            teams = (r.json().get("teams") or [])
-            if teams:
-                ids[team] = teams[0].get("id")
-        if not ids:
-            return ""
-        tid = ids.get(home) or ids.get(away)
-        r = _rq.get(f"{_FDO_BASE}/teams/{tid}/matches",
-                    params={"status": "FINISHED", "limit": 6}, headers=h, timeout=timeout)
+        r = _rq.get(url, params=params, headers={"X-Auth-Token": key}, timeout=timeout)
+        _FDO_LAST[0] = time.time()
         if r.status_code != 200:
-            return ""
-        lines = []
-        for m in (r.json().get("matches") or [])[:6]:
+            return None
+        d = r.json()
+        _FDO_CACHE[ck] = d
+        return d
+    except Exception:
+        _FDO_LAST[0] = time.time()
+        return None
+
+
+def team_recent_struct(team, limit=8):
+    """Structured recent finished matches for a team (shared by scout + analyst, cached).
+    Returns {'matches': [{home, away, hs, aws, comp}], 'tid': id} — empty matches on miss."""
+    out = {"matches": [], "tid": None}
+    try:
+        d = _fdo_get(f"{_FDO_BASE}/teams", {"name": team})
+        teams = (d or {}).get("teams") or []
+        if not teams:
+            return out
+        tid = teams[0].get("id")
+        out["tid"] = tid
+        d2 = _fdo_get(f"{_FDO_BASE}/teams/{tid}/matches", {"status": "FINISHED", "limit": limit})
+        for m in ((d2 or {}).get("matches") or [])[:limit]:
             sc = (m.get("score") or {}).get("fullTime") or {}
-            lines.append(f"{m.get('homeTeam', {}).get('shortName') or m.get('homeTeam', {}).get('name')} "
-                         f"{sc.get('home', '?')}-{sc.get('away', '?')} "
-                         f"{m.get('awayTeam', {}).get('shortName') or m.get('awayTeam', {}).get('name')} "
-                         f"({m.get('competition', {}).get('name', '')})")
-        out = f"Recent finished matches involving these clubs: {'; '.join(lines)}." if lines else ""
-        # H2H via finished matches of home team filtered to meetings with away team
-        h2h = [l for l in lines if away.split()[-1].lower() in l.lower() or home.split()[-1].lower() in l.lower()]
-        if len(lines) >= 2 and not h2h:
-            out += " No past meetings found in this sample."
-        time.sleep(6)  # respect 10 req/min free tier
-        return out
+            try:
+                hs, aws = int(sc.get("home")), int(sc.get("away"))
+            except Exception:
+                continue
+            out["matches"].append({
+                "home": (m.get("homeTeam") or {}).get("name", ""),
+                "away": (m.get("awayTeam") or {}).get("name", ""),
+                "hs": hs, "aws": aws,
+                "comp": (m.get("competition") or {}).get("name", ""),
+            })
+    except Exception:
+        pass
+    return out
+
+
+def _struct_to_text(home, away, hs_struct, as_struct):
+    lines = []
+    seen = set()
+    for m in (hs_struct.get("matches") or []) + (as_struct.get("matches") or []):
+        k = (m["home"], m["away"], m["hs"], m["aws"])
+        if k in seen:
+            continue
+        seen.add(k)
+        lines.append(f"{m['home']} {m['hs']}-{m['aws']} {m['away']} ({m['comp']})")
+        if len(lines) >= 10:
+            break
+    if not lines:
+        return ""
+    out = f"Recent finished matches involving these clubs: {'; '.join(lines)}."
+    last = (home.split() or [""])[-1].lower()
+    h2h = [l for l in lines if last and last in l.lower()]
+    if len(lines) >= 2 and not h2h:
+        out += " No past meetings found in this sample."
+    return out
+
+
+def get_history(home, away, league="", timeout=15, struct=None):
+    """Recent form + H2H text via football-data.org (free 10/min). Best-effort, '' on failure.
+    Pass struct=(home_struct, away_struct) to reuse scout-fetched data (no double spend)."""
+    try:
+        if struct:
+            return _struct_to_text(home, away, struct[0], struct[1])
+        if not _fdo_key():
+            return ""
+        return _struct_to_text(home, away, team_recent_struct(home), team_recent_struct(away))
     except Exception:
         return ""
 
 
 def get_news(home, away, league="", timeout=20):
-    """Team news: Tavily first, DuckDuckGo fallback (draw-predictor pattern)."""
+    """Team news: DuckDuckGo first (free, unlimited); Tavily only when DDG is thin."""
     q = f"{home} vs {away} {league} prediction team news injuries"
-    # Tavily
+    ddg_bits = []
+    try:
+        r = _rq.post(_DDG_BASE, data={"q": q + " injuries lineup"}, timeout=timeout,
+                     headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            texts = re.findall(r'class="result-snippet"[^>]*>(.*?)</', r.text)
+            clean = [re.sub(r"<.*?>", "", t).strip() for t in texts[:5]]
+            ddg_bits = [t for t in clean if t]
+    except Exception:
+        pass
+    if len(ddg_bits) >= 2:
+        return "DDG: " + " | ".join(ddg_bits)[:1500]
+    # Tavily only when DDG couldn't cover it
     tkey = os.environ.get("TAVILY_API_KEY", "")
     if tkey:
         try:
@@ -132,27 +199,17 @@ def get_news(home, away, league="", timeout=20):
                                "include_answer": True}, timeout=timeout)
             if r.status_code == 200:
                 d = r.json()
-                bits = []
+                bits = list(ddg_bits)
                 if d.get("answer"):
-                    bits.append(str(d["answer"])[:600])
+                    bits.append("Tavily: " + str(d["answer"])[:600])
                 for res in (d.get("results") or [])[:4]:
                     bits.append(f"{res.get('title', '')}: {str(res.get('content', ''))[:300]}")
                 if bits:
                     return " | ".join(bits)[:2000]
         except Exception:
             pass
-    # DuckDuckGo fallback (free, unlimited)
-    try:
-        r = _rq.post(_DDG_BASE, data={"q": q + " injuries lineup"}, timeout=timeout,
-                     headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200:
-            texts = re.findall(r'class="result-snippet"[^>]*>(.*?)</', r.text)
-            clean = [re.sub(r"<.*?>", "", t).strip() for t in texts[:5]]
-            clean = [t for t in clean if t]
-            if clean:
-                return "DDG: " + " | ".join(clean)[:1500]
-    except Exception:
-        pass
+    if ddg_bits:
+        return "DDG: " + " | ".join(ddg_bits)[:1500]
     return ""
 
 
@@ -192,8 +249,9 @@ def _parse_persona(text):
     return score, note
 
 
-def analyze_finalist(leg, progress_cb=None):
-    """Full swarm on ONE shortlisted leg. Returns (prob, why, analysis). Never raises."""
+def analyze_finalist(leg, progress_cb=None, history_struct=None):
+    """Full swarm on ONE shortlisted leg. Returns (prob, why, analysis). Never raises.
+    history_struct=(home_struct, away_struct) reuses scout-fetched FDO data."""
     def _msg(m):
         if progress_cb:
             try:
@@ -214,7 +272,7 @@ def analyze_finalist(leg, progress_cb=None):
     base = _implied(odds)
 
     _msg(f"Analyst: {home} vs {away} ({selection}) — gathering history + news…")
-    history = get_history(home, away, league)
+    history = get_history(home, away, league, struct=history_struct)
     news = get_news(home, away, league)
     if not history:
         history = "No recent-form data available (coverage gap)."
@@ -223,6 +281,7 @@ def analyze_finalist(leg, progress_cb=None):
 
     brief = (f"Match: {home} vs {away}\nLeague: {league}\nMarket: {market}\n"
              f"Selection: {selection} @ {odds} (implied {base})\n"
+             f"Data scout (pure-code models, no LLM): {(leg.get('_data') or (0, 0, ''))[2] if isinstance(leg.get('_data'), tuple) else ''}\n"
              f"History: {history[:900]}\nNews: {news[:1200]}")
 
     verdicts = []

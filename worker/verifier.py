@@ -94,9 +94,31 @@ def _settle_leg(selection: str, hs: int, aws: int) -> bool | None:
     """Market-aware settle from a full-time score. True=won, False=lost, None=unknown."""
     sel = str(selection or "").strip().lower()
     total = hs + aws
+    home_win, draw, away_win = hs > aws, hs == aws, aws > hs
+    both = hs > 0 and aws > 0
     if sel.startswith("btts:"):
-        both = hs > 0 and aws > 0
         return both if "yes" in sel else (not both)
+    if sel in ("1x", "x2", "12"):
+        return {"1x": hs >= aws, "x2": aws >= hs, "12": hs != aws}[sel]
+    if "&" in sel:
+        # combos: "1&YES", "O2.5&YES", "1&O2.5", "X&U1.5" …
+        import re as _re
+        parts = [p.strip() for p in sel.split("&")]
+        res = []
+        for p in parts:
+            if p in ("1", "x", "2"):
+                res.append({"1": home_win, "x": draw, "2": away_win}[p])
+            elif p == "yes":
+                res.append(both)
+            elif p == "no":
+                res.append(not both)
+            else:
+                m = _re.match(r"([ou])\s*(\d+(?:\.5)?)", p)
+                if not m:
+                    return None
+                line = float(m.group(2))
+                res.append(total > line if m.group(1) == "o" else total < line)
+        return all(res)
     if sel.startswith("over"):
         try:
             line = float(sel.split()[1])

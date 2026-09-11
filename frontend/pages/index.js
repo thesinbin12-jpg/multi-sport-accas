@@ -121,6 +121,8 @@ export default function Home() {
   const visible = tickets.filter((t) =>
     filter === 'All' ? true : (t.status || 'pending') === filter.toLowerCase()
   );
+  const fresh = visible.slice(0, 2);
+  const older = visible.slice(2);
   const totalLegs = tickets.reduce((s, t) => s + (t.legs?.length || 0), 0);
   const best = tickets.length
     ? Math.max(...tickets.map((t) => Number(t.combined_odds) || 0))
@@ -158,8 +160,8 @@ export default function Home() {
         <div className="sheet-copy">
           <h2 className="sheet-head">{todayName()}&rsquo;s value, on one slip.</h2>
           <p className="sheet-sub">
-            Scans 177 leagues across football, basketball, tennis and more, prices each leg
-            with AI, and keeps the best-value combination.
+            Scans every soccer fixture across real bookmaker and exchange odds, scores each market
+            with data models plus AI analysts, and keeps the best-value combination.
             {best > 0 ? ` Best ${kind} on file pays ${fmtOdds(best)}x.` : ` No ${kind} slips filed yet.`}
           </p>
           <div className="kinds" role="tablist" aria-label="Slip type">
@@ -184,7 +186,7 @@ export default function Home() {
           <p className="sheet-note">
             {building
               ? status.message || 'Working…'
-              : `Manual trigger only. Takes about a minute. No staking. ${activeKind.blurb}`}
+              : `Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. ${activeKind.blurb}`}
           </p>
           {error && <p className="sheet-error">{error}</p>}
         </div>
@@ -220,7 +222,7 @@ export default function Home() {
             </p>
           </div>
         )}
-        {visible.map((t, i) => (
+        {fresh.map((t, i) => (
           <Slip
             key={t.id || i}
             ticket={t}
@@ -229,6 +231,20 @@ export default function Home() {
             onToggle={() => setOpenId(openId === (t.id || i) ? null : t.id || i)}
           />
         ))}
+        {older.length > 0 && (
+          <details className="older">
+            <summary>Older slips ({older.length}) — settled history</summary>
+            {older.map((t, i) => (
+              <Slip
+                key={t.id || i}
+                ticket={t}
+                index={tickets.length - tickets.indexOf(t)}
+                open={openId === (t.id || i)}
+                onToggle={() => setOpenId(openId === (t.id || i) ? null : t.id || i)}
+              />
+            ))}
+          </details>
+        )}
       </main>
 
       <footer className="colophon">

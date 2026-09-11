@@ -288,7 +288,21 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             diverse = windowed
     except Exception:
         pass
-    candidates = diverse[: max(12, max_legs * 2)]
+    # Market scout (pure code, no LLM): EVERY fixture x EVERY market it carries
+    # is data-scored (Poisson 1X2 / BTTS rates / O-U from FDO form+H2H blended
+    # with implied). The data names the market first; the swarm debates survivors.
+    try:
+        try:
+            from market_scout import scout
+        except ImportError:
+            from worker.market_scout import scout  # type: ignore
+        scouted = scout(diverse, fdo_budget=int(getattr(config, "SCOUT_FIXTURES", 24) or 24),
+                        keep=max(20, max_legs * 3), progress_cb=progress_cb)
+        if scouted:
+            diverse = scouted
+    except Exception:
+        pass
+    candidates = diverse[: max(24, (max_legs or 6) + 10)]
 
     # Analyst swarm (draw-predictor pattern, multi-market): deep verdicts on
     # finalists only. analyst.py gathers its own history (football-data.org)
@@ -309,14 +323,9 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         except Exception:
             pass
 
-    built = []
-    picked = []  # raw legs already in ticket (same-match guard: one market per match)
+    # Phase 1: assess every candidate (swarm verdicts already cached above).
+    assessed = []
     for leg in candidates:
-        if len(built) >= max_legs:
-            break
-        if any(_same_match(leg, p) for p in picked):
-            continue
-        picked.append(leg)
         _enrich_with_fotmob(leg)
         if "_swarm" in leg:
             prob, why = leg["_swarm"][0], leg["_swarm"][1]
@@ -328,7 +337,45 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             prob, why = _ai_assess(leg, news)
         else:
             prob, why = _implied_prob(leg.get("best_odds", 2.0)), "implied (AI off)"
-        # pick favourite outcome = outcome with lowest price
+        try:
+            prob = float(prob)
+        except Exception:
+            prob = 0.0
+        assessed.append((leg, prob, why))
+    # Phase 2: pick. Ceiling 20, never forced: first 6 by rank, extras only
+    # when genuinely likely (prob >= 0.55). Same-match guard: one market/match.
+    ceiling = min(20, max(2, int(max_legs or 20)))
+    assessed.sort(key=lambda t: -t[1])
+    picked = []
+    for leg, prob, why in assessed:
+        if len(picked) >= ceiling:
+            break
+        if len(picked) >= 6 and prob < 0.55:
+            continue
+        if any(_same_match(leg, p[0]) for p in picked):
+            continue
+        picked.append((leg, prob, why))
+    # Market diversity: span >= 2 markets when candidates allow (swap worst
+    # picked leg for the best unpicked leg of another market within 0.07 prob).
+    if len(picked) >= 2 and len({p[0].get("market") for p in picked}) < 2:
+        worst = min(picked, key=lambda t: t[1])
+        taken = {id(p[0]) for p in picked}
+        alt = None
+        for leg, prob, why in assessed:
+            if id(leg) in taken:
+                continue
+            if leg.get("market") == worst[0].get("market"):
+                continue
+            if prob < worst[1] - 0.07:
+                continue
+            if any(_same_match(leg, p[0]) for p in picked if p is not worst):
+                continue
+            alt = (leg, prob, why)
+            break
+        if alt:
+            picked = [p for p in picked if p is not worst] + [alt]
+    built = []
+    for leg, prob, why in picked:
         outcomes = leg.get("outcomes", []) or []
         if outcomes:
             fav = min(outcomes, key=lambda o: float(o.get("price", 999)))
@@ -382,7 +429,7 @@ Legs (index, selection, league, odds, model probability, reason):
 {legs}
 Combined odds: {combined}x
 
-Pick the final order (best first, drop any leg you distrust by omitting it, keep at least 2), set stake in units and confidence 0-1. Reply exactly:
+Pick the final order (best first, drop any leg you distrust by omitting it, keep at least 2, keep at most 20 — more legs only when each one is genuinely likely). Prefer tickets spanning at least 2 markets when candidates allow. Set stake in units and confidence 0-1. Reply exactly:
 {{"order": [0, 2, 1], "stake_units": 1.5, "confidence": 0.62, "stake_note": "one short sentence"}}"""
 
 
