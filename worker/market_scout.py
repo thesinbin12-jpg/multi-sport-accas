@@ -295,6 +295,8 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
         (_hkey, _akey), fl = item
         home = fl[0].get("home_team", "?")
         away = fl[0].get("away_team", "?")
+        sources = {str(l.get("best_bookmaker", "")) for l in fl if l.get("best_bookmaker")}
+        coverage = len(sources)
         markets: dict = {}
         for leg in fl:
             markets.setdefault(leg.get("market", "1X2"), []).extend(_leg_outcomes(leg))
@@ -329,10 +331,15 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
             inband = [(n, b, e, p, w) for n, (b, e, p, w) in picks.items() if 1.5 <= p <= 7.0]
             pool = inband or [(n, b, e, p, w) for n, (b, e, p, w) in picks.items()]
             name, blended, edge, price, why = max(pool, key=lambda c: (c[1], c[2]))
+            if coverage <= 1 and "baseline" in str(why):
+                # obscure fixture, one book, no history: playable but discounted + flagged
+                blended = round(blended * 0.95, 4)
+                why = str(why) + " [single-source: may not be on every book]"
             leg["_picks"] = picks
             leg["_data"] = (blended, edge, why)
             leg["_pick"] = name
             leg["_pick_name"] = orig.get(name, name)
+            leg["_coverage"] = coverage
             got.append(leg)
         return got
 

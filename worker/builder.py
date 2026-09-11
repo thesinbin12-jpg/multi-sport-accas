@@ -435,6 +435,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             "analysis": leg.get("analysis", ""),
             "commence_time": leg.get("commence_time", ""),
             "bookmaker": leg.get("best_bookmaker", ""),
+            "coverage": ("wide" if int(leg.get("_coverage", 1) or 1) > 1 else "single-book"),
         })
 
     if not built:
