@@ -307,7 +307,7 @@ _ASK_N = [0]
 _LAST_PREF = [None]
 _RPM: dict = {}
 _RPM_LOCK = threading.Lock()
-_RPM_LIMITS = {"groq": 18, "gemini": 15, "orouter": 8, None: 12}
+_RPM_LIMITS = {"nim": 35, "groq": 18, "gemini": 15, "orouter": 8, None: 12}
 
 
 def _rpm_wait(pref):
@@ -330,16 +330,17 @@ def _rpm_wait(pref):
 
 
 def _rotation(exclude=None):
-    """Providers actually keyed (None = full chain). OpenRouter first (main),
-    skipped while its ~50/day free budget is spent. Rebuilt lazily."""
+    """Providers keyed (None = full chain). NVIDIA NIM primary (40 RPM, tested).
+    Groq workhorse next; OpenRouter precious (50/day): overflow + synth prefer."""
     try:
-        avail = [p for p in ("groq", "gemini") if _router.has_provider(p)]
+        avail = []
+        if _router.has_provider("nim"):
+            avail.append("nim")
+        avail += [p for p in ("groq", "gemini") if _router.has_provider(p)]
         try:
             from learner import or_left
         except ImportError:
             from worker.learner import or_left  # type: ignore
-        # Groq is the workhorse (1000 RPD). OpenRouter (50/day) is precious:
-        # last in rotation overflow, first choice for synth/rank via prefer.
         if _router.has_provider("orouter") and or_left() > 0:
             avail = avail + ["orouter"]
         if exclude and len(avail) > 1:
@@ -549,7 +550,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
                   f"{wline}"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
-                  max_chars=1500, tries=3, gated=False, stage="synth", prefer="orouter")
+                  max_chars=1500, tries=3, gated=False, stage="synth", prefer="nim")
     if not synth:
         # layered fallback: one full-chain single verdict before implied
         last = _ask(f"{brief}\n\nReply with exactly two lines:\nPROB=<0-1 selection win probability>\nWHY=<2-4 sentences citing specific teams, players, numbers>",

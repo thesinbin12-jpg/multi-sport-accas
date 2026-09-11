@@ -11,6 +11,9 @@ GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OR_BASE = "https://openrouter.ai/api/v1"
+NIM_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NIM_BASE = "https://integrate.api.nvidia.com/v1"
+NIM_MODELS = [m.strip() for m in os.environ.get("NIM_MODELS", "mistralai/mistral-nemotron,meta/muse-glimmer-30b,moonshotai/kimi-k3,nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b").split(",") if m.strip()]
 
 class AIRouter:
     def __init__(self):
@@ -75,7 +78,31 @@ class AIRouter:
             return bool(GEMINI_KEY)
         if name == "orouter":
             return bool(OR_KEY)
+        if name == "nim":
+            return bool(NIM_KEY)
         return False
+
+    def call_nim(self, model, messages, max_tokens=1024, temperature=0.7):
+        if not NIM_KEY:
+            return None, "NIM_KEY not set"
+        try:
+            r = requests.post(
+                f"{NIM_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {NIM_KEY}", "Content-Type": "application/json"},
+                json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+                timeout=150,
+            )
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"], None
+            if r.status_code == 429:
+                return None, "NIM rate limited"
+            if r.status_code == 404:
+                return None, "Model not entitled: " + str(model)
+            return None, "NIM error %s: %s" % (r.status_code, r.text[:100])
+        except requests.exceptions.Timeout:
+            return None, "NIM timeout"
+        except Exception as e:
+            return None, "NIM exception: " + str(e)
 
     def call_openrouter(self, model, messages, max_tokens=1024, temperature=0.7):
         """Call OpenRouter (OpenAI-compatible, :free models need only a key)."""
@@ -190,6 +217,15 @@ class AIRouter:
         # NOTE 2026-09-11: OpenCode Zen removed — free tier locked to the
         # OpenCode client (MissingSessionID server-side even with session
         # header; quota exhausted), paid needs billing. Kept out of chain.
+        # Phase 5: NVIDIA NIM (tested winners; needs key; models via NIM_MODELS env)
+        if not model_pref or model_pref == "nim":
+            for model in NIM_MODELS:
+                text, err = self.call_nim(model, messages)
+                if text and not err:
+                    elapsed = time.time() - start
+                    return text, model, None, elapsed
+                last_error = err
+
         # Phase 4: OpenRouter :free models (server-side friendly, needs key)
         if not model_pref or model_pref == "orouter":
             for model in self.or_models:
