@@ -6,7 +6,7 @@ Discovery via popular football event ids; per-match markets + quotes.
 
 Price format: percent x 100 (4717 = 47.17%). Back at best offer:
   decimal = 10000 / best_offer_price
-Emits the same odds-api-shaped events as sofa_odds (ids smk-*, market labels).
+Emits odds-api-shaped events (ids smk-*, market labels, same contract as betika_odds).
 """
 
 import time

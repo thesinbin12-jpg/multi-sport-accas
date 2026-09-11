@@ -19,10 +19,10 @@ DATABASE_URL = _get("DATABASE_URL")
 FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
 
 # Worker settings
-# Odds sources: SofaScore self-fetcher is primary (free, keyless, zero quota).
+# Odds sources: Betika bookmaker API is primary (free, keyless, zero quota,
+# real stakeable prices). Smarkets exchange is secondary (sharp, wins ties).
 # The Odds API (paid quota) is fallback only, guarded by ODDS_MIN_FLOOR.
-SOFA_PRIMARY = _get("SOFA_PRIMARY", "1") == "1"
-SOFA_MARKETS = _get("SOFA_MARKETS", "full")  # 1X2 (fast) or full (+BTTS/O-U-2.5/DC)
+BETIKA_ON = _get("BETIKA_ON", "1") == "1"
 SMARKETS_ON = _get("SMARKETS_ON", "1") == "1"  # Smarkets exchange as 2nd free source
 ODDS_MIN_FLOOR = int(_get("ODDS_MIN_CREDITS_FLOOR", "50"))
 # Scan focus: comma-separated groups (soccer,basketball) and/or sport keys.

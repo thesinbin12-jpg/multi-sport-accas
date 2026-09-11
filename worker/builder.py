@@ -131,31 +131,22 @@ def scan_and_extract(max_credits: int | None = None, progress_cb=None, kind: str
                        if k in SCAN_CONFIG.get("soccer", [])]
     else:
         soccer_keys = list(SCAN_CONFIG.get("soccer", []))
-    try:
-        from sofa_odds import SOFA_LEAGUES
-    except ImportError:
-        from worker.sofa_odds import SOFA_LEAGUES  # type: ignore
-    soccer_keys = [k for k in soccer_keys if k in SOFA_LEAGUES]
-
     legs = []
-    # 1. Free primary: SofaScore self-fetcher (zero quota). Non-soccer keys skip it.
-    sofa_ok = False
-    if config.SOFA_PRIMARY and soccer_keys:
+    # 1. Free primary: Betika bookmaker API (zero quota, real prices). Non-soccer keys skip it.
+    if config.BETIKA_ON and soccer_keys:
         try:
             try:
-                from sofa_odds import scan_sofa_soccer
+                from betika_odds import scan_betika
             except ImportError:
-                from worker.sofa_odds import scan_sofa_soccer  # type: ignore
-            sofa_results = scan_sofa_soccer(soccer_keys, hours_ahead=window_h,
-                                            callback=progress_cb, log=progress_cb,
-                                            markets=config.SOFA_MARKETS)
-            if sofa_results:
-                legs = OddsScanner().extract_legs(sofa_results, min_odds=config.MIN_ODDS,
+                from worker.betika_odds import scan_betika  # type: ignore
+            btk_legs = scan_betika(hours_ahead=window_h, callback=progress_cb, log=progress_cb)
+            if btk_legs:
+                legs = OddsScanner().extract_legs({"soccer_betika": btk_legs},
+                                                  min_odds=config.MIN_ODDS,
                                                   max_odds=config.MAX_ODDS)
-                sofa_ok = bool(legs)
         except Exception as e:
             if progress_cb:
-                progress_cb(f"SofaScore failed ({e}), trying next source.")
+                progress_cb(f"Betika failed ({e}), trying next source.")
     # 1b. Second free source: Smarkets exchange (sharper, wins ties on merge).
     if config.SMARKETS_ON:
         try:
