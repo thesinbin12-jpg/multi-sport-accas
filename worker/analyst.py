@@ -338,8 +338,10 @@ def _rotation(exclude=None):
             from learner import or_left
         except ImportError:
             from worker.learner import or_left  # type: ignore
+        # Groq is the workhorse (1000 RPD). OpenRouter (50/day) is precious:
+        # last in rotation overflow, first choice for synth/rank via prefer.
         if _router.has_provider("orouter") and or_left() > 0:
-            avail = ["orouter"] + avail
+            avail = avail + ["orouter"]
         if exclude and len(avail) > 1:
             avail = [p for p in avail if p != exclude] or avail
         return avail or [None]
@@ -347,7 +349,7 @@ def _rotation(exclude=None):
         return [None]
 
 
-def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", exclude=None):
+def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", exclude=None, prefer=None):
     """One task, ALL providers together: attempts cycle through every keyed
     provider, so a single dead provider never sinks the task."""
     if gated:
@@ -389,6 +391,8 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", 
     except Exception:
         _start_idx = 0
     order = provs[_start_idx:] + provs[:_start_idx] if provs else [None]
+    if prefer and prefer in provs:
+        order = [prefer] + [p for p in order if p != prefer]
     last_model, last_err = "", ""
     for attempt in range(max(1, tries)):
         pref = order[attempt % len(order)]
@@ -545,7 +549,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
                   f"{wline}"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
-                  max_chars=1500, tries=3, gated=False, stage="synth")
+                  max_chars=1500, tries=3, gated=False, stage="synth", prefer="orouter")
     if not synth:
         # layered fallback: one full-chain single verdict before implied
         last = _ask(f"{brief}\n\nReply with exactly two lines:\nPROB=<0-1 selection win probability>\nWHY=<2-4 sentences citing specific teams, players, numbers>",
