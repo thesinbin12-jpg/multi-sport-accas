@@ -156,14 +156,17 @@ def get_news(home, away, league="", timeout=20):
     return ""
 
 
-def _ask(prompt, system="", max_chars=1200):
-    try:
-        text, _model, err, _el = _router.analyze(prompt, system_prompt=system)
-        if err or not text:
-            return None
-        return str(text)[:max_chars]
-    except Exception:
-        return None
+def _ask(prompt, system="", max_chars=1200, tries=1):
+    for attempt in range(max(1, tries)):
+        try:
+            text, _model, err, _el = _router.analyze(prompt, system_prompt=system)
+            if err or not text:
+                time.sleep(3)
+                continue
+            return str(text)[:max_chars]
+        except Exception:
+            time.sleep(3)
+    return None
 
 
 def _parse_persona(text):
@@ -223,7 +226,7 @@ def analyze_finalist(leg, progress_cb=None):
     synth = _ask(f"Selection: {selection} @ {odds}. Statistical base probability: {base}.\n"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
-                  max_chars=1500)
+                  max_chars=1500, tries=3)
     prob, why, detail = base, f"implied {base} (synthesizer unavailable)", ""
     if synth:
         m = re.search(r"PROB\s*=\s*(0?\.\d+|1(?:\.0)?|0|1)", synth)
