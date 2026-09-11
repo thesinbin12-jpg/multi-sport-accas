@@ -381,22 +381,24 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         except Exception:
             prob = 0.0
         assessed.append((leg, prob, why))
-    # Phase 2: pick. Ceiling 20, never forced: first 6 by rank, extras only
-    # when genuinely likely (prob >= 0.55). Same-match guard: one market/match.
+    # Phase 2: pick. Ceiling 20, never forced. Kind-aware floors: daily stays
+    # tight (first 6, extras prob>=0.5 + EV>=1.0); weekly dream tickets play
+    # volume (first 8, extras prob>=0.45 + EV>=0.95). Same-match guard always.
+    _base = 8 if kind == "weekly" else 6
+    _pfloor = 0.45 if kind == "weekly" else 0.5
+    _evfloor = 0.95 if kind == "weekly" else 1.0
     ceiling = min(20, max(2, int(max_legs or 20)))
     assessed.sort(key=lambda t: -t[1])
     picked = []
     for leg, prob, why in assessed:
         if len(picked) >= ceiling:
             break
-        if len(picked) >= 6:
-            # extras: genuinely likely (prob>=0.5) AND value (EV>=1.0).
-            # ceiling is 20 — this floor, not a cap, decides the count.
+        if len(picked) >= _base:
             try:
                 _o = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
             except Exception:
                 _o = 0
-            if prob < 0.5 or prob * _o < 1.0:
+            if prob < _pfloor or prob * _o < _evfloor:
                 continue
         if any(_same_match(leg, p[0]) for p in picked):
             continue
