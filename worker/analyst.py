@@ -304,7 +304,7 @@ def _persona_weights() -> dict:
 
 
 _ASK_N = [0]
-_PROVIDERS = [None]
+_LAST_PREF = [None]
 _RPM: dict = {}
 _RPM_LOCK = threading.Lock()
 _RPM_LIMITS = {"groq": 25, "gemini": 20, "orouter": 12, None: 15}
@@ -329,7 +329,7 @@ def _rpm_wait(pref):
         pass
 
 
-def _rotation():
+def _rotation(exclude=None):
     """Providers actually keyed (None = full chain). OpenRouter first (main),
     skipped while its ~50/day free budget is spent. Rebuilt lazily."""
     try:
@@ -340,15 +340,16 @@ def _rotation():
             from worker.learner import or_left  # type: ignore
         if _router.has_provider("orouter") and or_left() > 0:
             avail = ["orouter"] + avail
+        if exclude and len(avail) > 1:
+            avail = [p for p in avail if p != exclude] or avail
         return avail or [None]
     except Exception:
         return [None]
 
 
-def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm"):
-    """LLM call with daily budget gate (personas) — synthesizer passes gated=False.
-    Provider rotation (Groq/Gemini alternate) spreads rate-limit load.
-    When the budget is spent, personas abstain (implied/base carries the leg)."""
+def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", exclude=None):
+    """One task, ALL providers together: attempts cycle through every keyed
+    provider, so a single dead provider never sinks the task."""
     if gated:
         try:
             try:
@@ -356,7 +357,7 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm"):
             except ImportError:
                 from worker.learner import llm_left, log_llm, or_left, log_or  # type: ignore
             _ASK_N[0] += 1
-            provs = _rotation()
+            provs = _rotation(exclude)
             pref = provs[_ASK_N[0] % len(provs)]
             if pref == "orouter":
                 if or_left() <= 0:
@@ -368,15 +369,23 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm"):
                 log_llm()
         except Exception:
             _ASK_N[0] += 1
-            provs = _rotation()
+            provs = _rotation(exclude)
             pref = provs[_ASK_N[0] % len(provs)]
     else:
         _ASK_N[0] += 1
-        provs = _rotation()
+        provs = _rotation(exclude)
         pref = provs[_ASK_N[0] % len(provs)]
     _rpm_wait(pref)
+    try:
+        _start_idx = provs.index(pref) if pref in provs else 0
+    except Exception:
+        _start_idx = 0
+    order = provs[_start_idx:] + provs[:_start_idx] if provs else [None]
     last_model, last_err = "", ""
     for attempt in range(max(1, tries)):
+        pref = order[attempt % len(order)]
+        _LAST_PREF[0] = pref
+        _rpm_wait(pref)
         try:
             text, _model, err, _el = _router.analyze(prompt, system_prompt=system, model_pref=pref)
             last_model, last_err = str(_model or ""), str(err or "")
@@ -533,7 +542,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
         # layered fallback: one full-chain single verdict before implied
         last = _ask(f"{brief}\n\nReply with exactly two lines:\nPROB=<0-1 selection win probability>\nWHY=<2-4 sentences citing specific teams, players, numbers>",
                     system="You are a senior betting analyst. Be specific, cite numbers and names.",
-                    max_chars=600, tries=2, gated=False, stage="single")
+                    max_chars=600, tries=2, gated=False, stage="single", exclude=_LAST_PREF[0])
         if last:
             synth = last
     prob, why, detail = base, f"implied {base} (synthesizer unavailable)", ""
