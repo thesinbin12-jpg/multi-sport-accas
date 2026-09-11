@@ -307,7 +307,7 @@ _ASK_N = [0]
 _LAST_PREF = [None]
 _RPM: dict = {}
 _RPM_LOCK = threading.Lock()
-_RPM_LIMITS = {"groq": 25, "gemini": 20, "orouter": 12, None: 15}
+_RPM_LIMITS = {"groq": 18, "gemini": 15, "orouter": 8, None: 12}
 
 
 def _rpm_wait(pref):

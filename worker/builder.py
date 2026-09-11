@@ -341,7 +341,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 except Exception:
                     return ix, leg, None
 
-            with _cf.ThreadPoolExecutor(max_workers=5) as _ex:
+            with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
                 done = sorted(_ex.map(_one, enumerate(finalists)), key=lambda t: t[0])
             for _ix, leg, res in done:
                 if res:

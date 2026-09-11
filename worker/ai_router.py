@@ -23,7 +23,6 @@ class AIRouter:
             "gemini-3.5-flash",        # Gemini 3.5 — fast, good quality
             "gemini-3.6-flash",        # Gemini 3.6 — newer
             "gemini-3.7-flash",        # Gemini 3.7 — newest flash
-            "gemini-2.5-flash",        # Older but reliable
         ]
         self.gemma_models = [
             "gemma-4-26b-a4b-it",      # Gemma 4 via AI Studio (free)
