@@ -13,6 +13,7 @@ Any failure degrades gracefully to implied probability — builds never break.
 import os
 import re
 import time
+import html
 import threading
 from datetime import datetime, timezone
 
@@ -303,12 +304,45 @@ def _rss_for(home, away, limit=3):
     return got
 
 
+def _brave_search(query, timeout=20, limit=5):
+    """Brave web search via curl_cffi (free, keyless, TLS-impersonated).
+    Returns ['title: snippet', ...]. Empty on any failure."""
+    try:
+        try:
+            from curl_cffi import requests as _cr
+        except ImportError:
+            return []
+        s = _cr.Session(impersonate="chrome120")
+        r = s.get("https://search.brave.com/search", params={"q": query}, timeout=timeout)
+        if r.status_code != 200 or "data-type=\"web\"" not in r.text:
+            return []
+        out = []
+        for b in r.text.split('data-type="web"')[1:]:
+            tm = re.search(r'title="([^"]{10,160})"', b)
+            dm = re.search(r'class="[^"]*snippet-description[^"]*"[^>]*>(.*?)</', b, re.DOTALL)
+            title = html.unescape(tm.group(1)).strip() if tm else ""
+            desc = html.unescape(re.sub(r"<[^>]+>", " ", dm.group(1))) if dm else ""
+            desc = re.sub(r"\s+", " ", desc).strip()[:250]
+            if title:
+                out.append(title + (": " + desc if desc else ""))
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:
+        return []
+
+
 def get_news(home, away, league="", timeout=20):
-    """Team news: DuckDuckGo first (free, unlimited); Tavily only when DDG is thin."""
+    """Team news, free stack: RSS match -> Brave search -> DuckDuckGo; Tavily only when all thin."""
     q = f"{home} vs {away} {league} prediction team news injuries"
     rss_bits = []
     try:
         rss_bits = _rss_for(home, away)
+    except Exception:
+        pass
+    brave_bits = []
+    try:
+        brave_bits = ["Brave: " + b for b in _brave_search(f"{home} vs {away} injuries lineup")]
     except Exception:
         pass
     ddg_bits = []
@@ -322,7 +356,9 @@ def get_news(home, away, league="", timeout=20):
     except Exception:
         pass
     if rss_bits:
-        ddg_bits = ["RSS: " + b for b in rss_bits] + ddg_bits
+        ddg_bits = ["RSS: " + b for b in rss_bits] + brave_bits + ddg_bits
+    elif brave_bits:
+        ddg_bits = brave_bits + ddg_bits
     if len(ddg_bits) >= 2:
         return " | ".join(ddg_bits)[:1500]
     # Tavily only when DDG couldn't cover it
