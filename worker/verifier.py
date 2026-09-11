@@ -58,6 +58,22 @@ def verify_all_pending(days_from: int = 3) -> dict:
 
     stats = db.get_accuracy_stats()
     db.record_accuracy(stats["verified_tickets"], stats["won_tickets"], notes="auto verify")
+    # finalization: any ticket (pending/checked) with all legs decided gets its
+    # true status — never leaves decided slips in limbo, never deletes results.
+    try:
+        for t in db.get_tickets(limit=50):
+            if (t.get("status") or "pending") not in ("pending", "checked"):
+                continue
+            legs = db.get_legs(t["id"])
+            if not legs or any(l.get("result") == "pending" for l in legs):
+                if (t.get("status") or "") == "checked":
+                    db.set_ticket_status(t["id"], "pending")
+                continue
+            correct = sum(1 for l in legs if l.get("result") == "won")
+            ticket_won = (correct == len(legs) and len(legs) > 0)
+            db.record_verification(t["id"], ticket_won, correct, len(legs), {})
+    except Exception:
+        pass
     out: dict = {"checked": won + lost, "won": won, "lost": lost, "pending": still_pending}
     if contexts:
         out["contexts"] = contexts

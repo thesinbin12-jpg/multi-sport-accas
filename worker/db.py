@@ -300,7 +300,6 @@ def update_leg_result(ticket_id: str, match: str, result: str) -> None:
             try:
                 cur = conn.cursor()
                 cur.execute("UPDATE acca_legs SET result=%s WHERE ticket_id=%s AND match=%s", (result, ticket_id, match))
-                cur.execute("UPDATE acca_tickets SET status=%s WHERE id=%s", (result if False else "checked", ticket_id))
                 conn.commit()
             finally:
                 conn.close()
@@ -321,6 +320,8 @@ def prune_pending(kind: str, keep: int = 2) -> int:
             try:
                 cur = conn.cursor()
                 cur.execute("SELECT id FROM acca_tickets WHERE kind=%s AND status='pending' "
+                            "AND NOT EXISTS (SELECT 1 FROM acca_legs l WHERE l.ticket_id=acca_tickets.id "
+                            "AND l.result IN ('won','lost')) "
                             "ORDER BY created_at DESC OFFSET %s", (kind, int(keep)))
                 ids = [r[0] for r in cur.fetchall()]
                 for tid in ids:
@@ -334,6 +335,8 @@ def prune_pending(kind: str, keep: int = 2) -> int:
             conn = _sqlite_conn()
             cur = conn.cursor()
             _execute(cur, "SELECT id FROM acca_tickets WHERE kind=%s AND status='pending' "
+                          "AND NOT EXISTS (SELECT 1 FROM acca_legs l WHERE l.ticket_id=acca_tickets.id "
+                          "AND l.result IN ('won','lost')) "
                           "ORDER BY created_at DESC LIMIT 1000000 OFFSET %s", (kind, int(keep)))
             ids = [r[0] for r in cur.fetchall()]
             for tid in ids:
