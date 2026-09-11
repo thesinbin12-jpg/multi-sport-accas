@@ -306,8 +306,10 @@ def _rss_for(home, away, limit=3):
 
 def _brave_search(query, timeout=20, limit=5):
     """Brave web search via curl_cffi (free, keyless, TLS-impersonated).
-    Returns ['title: snippet', ...]. Empty on any failure."""
+    Returns ['title: snippet', ...]. Empty on any failure. Brave 429s fast
+    probing, so 2s pacing keeps build-time calls gentle."""
     try:
+        time.sleep(2)
         try:
             from curl_cffi import requests as _cr
         except ImportError:
