@@ -41,7 +41,7 @@ DAILY_LLM_BUDGET = int(_get("DAILY_LLM_BUDGET", "400"))  # persona calls/day; sy
 MIN_ODDS = float(_get("MIN_ODDS", "1.5"))
 MAX_ODDS = float(_get("MAX_ODDS", "7.0"))
 # Kickoff windows: daily slips only near-term fixtures, weekly up to 7 days out
-KICKOFF_HOURS_DAILY = int(_get("KICKOFF_HOURS_DAILY", "24"))
+KICKOFF_HOURS_DAILY = int(_get("KICKOFF_HOURS_DAILY", "48"))
 KICKOFF_HOURS_WEEKLY = int(_get("KICKOFF_HOURS_WEEKLY", "168"))
 PORT = int(_get("PORT", "8000"))
 
