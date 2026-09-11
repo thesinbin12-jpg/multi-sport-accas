@@ -334,6 +334,22 @@ def log_llm(n: int = 1) -> None:
         pass
 
 
+def llm_used_today() -> int:
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT n FROM acca_llm_usage WHERE day=%s",
+                  (datetime.now(timezone.utc).strftime("%Y-%m-%d"),))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        return int(row[0]) if row else 0
+    except Exception:
+        return -1
+
+
 def llm_left() -> int:
     """LLM calls remaining in today's budget (default 400). Fail-open: errors mean unlimited."""
     try:
@@ -795,6 +811,7 @@ def latest_insights() -> dict:
         "debrief": _last_debrief(),
         "strategy": get_strategy(),
         "llm": "agentic" if _llm_available() else "heuristic (no key)",
+        "llm_used_today": llm_used_today(),
     }
 
 

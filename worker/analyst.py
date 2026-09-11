@@ -241,8 +241,12 @@ def _persona_weights() -> dict:
         return {}
 
 
+_ASK_N = [0]
+
+
 def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
     """LLM call with daily budget gate (personas) — synthesizer passes gated=False.
+    Provider rotation (Groq/Gemini alternate) spreads rate-limit load.
     When the budget is spent, personas abstain (implied/base carries the leg)."""
     if gated:
         try:
@@ -255,15 +259,17 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
             log_llm()
         except Exception:
             pass
+    _ASK_N[0] += 1
+    pref = "gemini" if _ASK_N[0] % 2 else "groq"
     for attempt in range(max(1, tries)):
         try:
-            text, _model, err, _el = _router.analyze(prompt, system_prompt=system)
+            text, _model, err, _el = _router.analyze(prompt, system_prompt=system, model_pref=pref)
             if err or not text:
-                time.sleep(3)
+                time.sleep(8)
                 continue
             return str(text)[:max_chars]
         except Exception:
-            time.sleep(3)
+            time.sleep(8)
     return None
 
 
@@ -338,6 +344,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
 
     verdicts = []
     for pid, pname, psys in PERSONAS:
+        time.sleep(2)  # RPM kindness across ~90 calls/build
         t = _ask(f"{brief}\n\nReply exactly:\nSCORE=<0-1 selection win probability>\nNOTE=<one-two sentences with specifics>",
                   system=f"You are {pname}. {psys}",
                   max_chars=600)
