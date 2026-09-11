@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-const FILTERS = ['D-slip', 'Pending', 'Won', 'Lost'];
+const PENDING_TABS = ['Pending', 'Won', 'Lost'];
 const isFresh = (t) => {
   try {
     return new Date(t.created_at).toDateString() === new Date().toDateString();
@@ -42,6 +42,8 @@ export default function Home() {
   const [workerDown, setWorkerDown] = useState(false);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('D-slip');
+  const SLIP_TAB = kind === 'weekly' ? 'W-slip' : 'D-slip';
+  const FILTERS = [SLIP_TAB, ...PENDING_TABS];
   const [openId, setOpenId] = useState(null);
   const pollRef = useRef(null);
   const buildPollRef = useRef(null);
@@ -120,13 +122,13 @@ export default function Home() {
   }
 
   const counts = {
-    'D-slip': tickets.length > 0 ? 1 : 0,
+    [SLIP_TAB]: tickets.length > 0 ? 1 : 0,
     Pending: tickets.filter((t) => (t.status || 'pending') === 'pending').length,
     Won: tickets.filter((t) => t.status === 'won').length,
     Lost: tickets.filter((t) => t.status === 'lost').length,
   };
   const visible = tickets.filter((t) =>
-    filter === 'D-slip' ? true : (t.status || 'pending') === filter.toLowerCase()
+    filter === SLIP_TAB ? true : (t.status || 'pending') === filter.toLowerCase()
   );
   const fresh = visible.slice(0, 1);
   const older = visible.slice(1);
@@ -178,7 +180,7 @@ export default function Home() {
                 role="tab"
                 aria-selected={kind === k.id}
                 className={kind === k.id ? 'kind kind-active' : 'kind'}
-                onClick={() => { setKind(k.id); setFilter('D-slip'); }}
+                onClick={() => { setKind(k.id); setFilter(k.id === 'weekly' ? 'W-slip' : 'D-slip'); }}
               >
                 <span className="kind-label">{k.label}</span>
                 <span className="kind-blurb">{k.blurb}</span>
@@ -221,10 +223,10 @@ export default function Home() {
         )}
         {!loading && visible.length === 0 && (
           <div className="empty">
-            <h3>{filter === 'D-slip' ? `No fresh ${kind} slip today.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
+            <h3>{filter === SLIP_TAB ? `No ${kind} slip yet.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
             <p>
-              {filter === 'D-slip'
-                ? `File today's ${kind} slip above. It will appear here with every leg priced.`
+              {filter === SLIP_TAB
+                ? `File a ${kind} slip above. It will appear here with every leg priced.`
                 : 'Try another filter, or file a fresh slip.'}
             </p>
           </div>
