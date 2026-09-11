@@ -89,6 +89,11 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
 
         def progress(msg: str):
             _set_state(message=msg)
+            try:
+                import logging as _lg
+                _lg.getLogger("acca").info(str(msg)[:220])
+            except Exception:
+                pass
 
         tickets = builder.build_and_save(max_legs=max_legs, use_ai=use_ai,
                                          max_credits=max_credits, progress_cb=progress, kind=kind)
@@ -121,8 +126,25 @@ def _self_ping_loop():
 
 @app.on_event("startup")
 def _startup():
+    try:
+        import logbuf
+    except ImportError:
+        from worker import logbuf  # type: ignore
+    logbuf.attach()
     if os.environ.get("RENDER_EXTERNAL_URL"):
         threading.Thread(target=_self_ping_loop, daemon=True).start()
+
+
+@app.get("/logs")
+def logs(request: Request, tail: int = 200):
+    """Recent worker log lines (self-served; Render has no public logs API)."""
+    if not _authed(request):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        import logbuf
+    except ImportError:
+        from worker import logbuf  # type: ignore
+    return {"ok": True, "lines": logbuf.tail(tail)}
 
 
 @app.get("/health")
