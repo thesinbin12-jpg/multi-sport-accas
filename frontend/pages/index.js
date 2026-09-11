@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 
-const FILTERS = ['All', 'Pending', 'Won', 'Lost'];
+const FILTERS = ['D-slip', 'Pending', 'Won', 'Lost'];
+const isFresh = (t) => {
+  try {
+    return new Date(t.created_at).toDateString() === new Date().toDateString();
+  } catch (e) {
+    return false;
+  }
+};
 const KINDS = [
   { id: 'daily', label: 'Daily', blurb: '4–6 legs, best value today. Settles fast.' },
   { id: 'weekly', label: 'Weekly', blurb: 'Up to 20 legs, bigger odds, settles over the week.' },
@@ -34,7 +41,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [workerDown, setWorkerDown] = useState(false);
   const [error, setError] = useState('');
-  const [filter, setFilter] = useState('All');
+  const [filter, setFilter] = useState('D-slip');
   const [openId, setOpenId] = useState(null);
   const pollRef = useRef(null);
   const buildPollRef = useRef(null);
@@ -113,13 +120,13 @@ export default function Home() {
   }
 
   const counts = {
-    All: tickets.length,
+    'D-slip': tickets.filter(isFresh).length,
     Pending: tickets.filter((t) => (t.status || 'pending') === 'pending').length,
     Won: tickets.filter((t) => t.status === 'won').length,
     Lost: tickets.filter((t) => t.status === 'lost').length,
   };
   const visible = tickets.filter((t) =>
-    filter === 'All' ? true : (t.status || 'pending') === filter.toLowerCase()
+    filter === 'D-slip' ? isFresh(t) : (t.status || 'pending') === filter.toLowerCase()
   );
   const fresh = visible.slice(0, 2);
   const older = visible.slice(2);
@@ -171,7 +178,7 @@ export default function Home() {
                 role="tab"
                 aria-selected={kind === k.id}
                 className={kind === k.id ? 'kind kind-active' : 'kind'}
-                onClick={() => { setKind(k.id); setFilter('All'); }}
+                onClick={() => { setKind(k.id); setFilter('D-slip'); }}
               >
                 <span className="kind-label">{k.label}</span>
                 <span className="kind-blurb">{k.blurb}</span>
@@ -214,10 +221,10 @@ export default function Home() {
         )}
         {!loading && visible.length === 0 && (
           <div className="empty">
-            <h3>{filter === 'All' ? `No ${kind} slips yet.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
+            <h3>{filter === 'D-slip' ? `No fresh ${kind} slip today.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
             <p>
-              {filter === 'All'
-                ? `File your first ${kind} slip above. It will appear here with every leg priced.`
+              {filter === 'D-slip'
+                ? `File today's ${kind} slip above. It will appear here with every leg priced.`
                 : 'Try another filter, or file a fresh slip.'}
             </p>
           </div>
