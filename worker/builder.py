@@ -297,12 +297,28 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         except ImportError:
             from worker.market_scout import scout  # type: ignore
         scouted = scout(diverse, fdo_budget=int(getattr(config, "SCOUT_FIXTURES", 24) or 24),
-                        keep=max(20, max_legs * 3), progress_cb=progress_cb)
+                        keep=max(20, max_legs * 3), progress_cb=progress_cb, hours_ahead=window_h)
         if scouted:
             diverse = scouted
     except Exception:
         pass
     candidates = diverse[: max(24, (max_legs or 6) + 10)]
+    # Finalists round-robin across markets so the swarm debates 1X2, DC,
+    # BTTS, O/U and combos — never one market only.
+    _cap = max(2, int(getattr(config, "ANALYST_MAX", 10) or 10))
+    _by_mkt: dict = {}
+    for leg in candidates:
+        _by_mkt.setdefault(str(leg.get("market", "1X2")), []).append(leg)
+    finalists = []
+    _round = 0
+    _depth = max([len(v) for v in _by_mkt.values()] or [0])
+    while len(finalists) < _cap and _round < _depth:
+        for _mk in sorted(_by_mkt):
+            if len(finalists) >= _cap:
+                break
+            if _round < len(_by_mkt[_mk]):
+                finalists.append(_by_mkt[_mk][_round])
+        _round += 1
 
     # Analyst swarm (draw-predictor pattern, multi-market): deep verdicts on
     # finalists only. analyst.py gathers its own history (football-data.org)
@@ -315,7 +331,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             except ImportError:
                 from worker.analyst import analyze_finalist  # type: ignore
             import concurrent.futures as _cf
-            finalists = candidates[: max(2, int(getattr(config, "ANALYST_MAX", 10) or 10))]
+            finalists = finalists or candidates[: max(2, int(getattr(config, "ANALYST_MAX", 10) or 10))]
 
             def _one(ix_leg):
                 ix, leg = ix_leg
@@ -372,8 +388,15 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     for leg, prob, why in assessed:
         if len(picked) >= ceiling:
             break
-        if len(picked) >= 6 and prob < 0.55:
-            continue
+        if len(picked) >= 6:
+            # extras: genuinely likely (prob>=0.5) AND value (EV>=1.0).
+            # ceiling is 20 — this floor, not a cap, decides the count.
+            try:
+                _o = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
+            except Exception:
+                _o = 0
+            if prob < 0.5 or prob * _o < 1.0:
+                continue
         if any(_same_match(leg, p[0]) for p in picked):
             continue
         picked.append((leg, prob, why))

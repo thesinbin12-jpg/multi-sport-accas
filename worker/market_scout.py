@@ -253,7 +253,7 @@ def _fixture_key(leg):
     return (_norm(leg.get("home_team")), _norm(leg.get("away_team")))
 
 
-def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
+def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
     """Two-stage: odds-shape preshortlist (no history) -> data scoring -> ranked legs.
 
     Attaches _data=(blended, edge, data_why, fixture_markets) per leg. Never raises.
@@ -287,6 +287,14 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
         return best
     ranked = sorted(fixtures.items(), key=lambda kv: -_fix_val(kv[1]))
     _refresh_priors()
+    try:
+        try:
+            from fixtures import get_popular
+        except ImportError:
+            from worker.fixtures import get_popular  # type: ignore
+        _POP = get_popular(hours_ahead)
+    except Exception:
+        _POP = {}
     _msg(f"Scout: {len(fixtures)} fixtures, probing top {min(fdo_budget, len(ranked))} with history…")
 
     scored = []
@@ -331,6 +339,17 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
             inband = [(n, b, e, p, w) for n, (b, e, p, w) in picks.items() if 1.5 <= p <= 7.0]
             pool = inband or [(n, b, e, p, w) for n, (b, e, p, w) in picks.items()]
             name, blended, edge, price, why = max(pool, key=lambda c: (c[1], c[2]))
+            try:
+                try:
+                    from fixtures import is_popular
+                except ImportError:
+                    from worker.fixtures import is_popular  # type: ignore
+                _pm, _pl = is_popular(home, away, _POP)
+            except Exception:
+                _pm, _pl = False, ""
+            if _pm:
+                edge = round(edge + 0.03, 4)
+                why = str(why) + f" [popular: {_pl}]"
             if coverage <= 1 and "baseline" in str(why):
                 # obscure fixture, one book, no history: playable but discounted + flagged
                 blended = round(blended * 0.95, 4)
