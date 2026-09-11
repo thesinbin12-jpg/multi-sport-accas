@@ -34,6 +34,20 @@ def _refresh_priors():
         _PRIORS = {}
 
 
+def _leg_outcomes(leg):
+    """Outcome (name, price) pairs from either leg shape: extract_legs puts a flat
+    'outcomes' list; raw events carry bookmakers[].markets[]. Never raises."""
+    try:
+        outs = leg.get("outcomes") or []
+        if outs:
+            return [(o.get("name"), o.get("price")) for o in outs if o.get("price") is not None]
+        mk = (leg.get("bookmakers") or [{}])[0].get("markets") or [{}]
+        return [(o.get("name"), o.get("price")) for o in (mk[0].get("outcomes", []) or [])
+                if o.get("price") is not None]
+    except Exception:
+        return []
+
+
 def _norm(name):
     return str(name or "").strip().lower()
 
@@ -259,12 +273,16 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
     def _fix_val(ls):
         best = 0.0
         for leg in ls:
-            for o in ((leg.get("bookmakers") or [{}])[0].get("markets") or [{}])[0].get("outcomes", []) or []:
+            for name, price in _leg_outcomes(leg):
                 try:
-                    p = 1.0 / float(o.get("price", 0))
+                    p = 1.0 / float(price or 0)
                 except Exception:
                     continue
-                if 1.5 <= float(o.get("price", 0)) <= 7.0 and p > best:
+                try:
+                    fprice = float(price or 0)
+                except Exception:
+                    continue
+                if 1.5 <= fprice <= 7.0 and p > best:
                     best = p
         return best
     ranked = sorted(fixtures.items(), key=lambda kv: -_fix_val(kv[1]))
@@ -277,10 +295,7 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
         away = fl[0].get("away_team", "?")
         markets: dict = {}
         for leg in fl:
-            mk = (leg.get("bookmakers") or [{}])[0].get("markets") or [{}]
-            outs = mk[0].get("outcomes", []) or []
-            markets.setdefault(leg.get("market", "1X2"), []).extend(
-                [(o.get("name"), o.get("price")) for o in outs])
+            markets.setdefault(leg.get("market", "1X2"), []).extend(_leg_outcomes(leg))
         try:
             res = score_fixture(home, away, markets)
         except Exception:

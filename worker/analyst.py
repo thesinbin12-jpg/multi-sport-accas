@@ -292,7 +292,21 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
     away = leg.get("away_team", "?")
     league = leg.get("league", "?")
     market = leg.get("market", "1X2")
-    outcomes = leg.get("bookmakers", [{}])[0].get("markets", [{}])[0].get("outcomes", []) if leg.get("bookmakers") else []
+    try:
+        from market_scout import _leg_outcomes as _lo
+    except ImportError:
+        try:
+            from worker.market_scout import _leg_outcomes as _lo  # type: ignore
+        except ImportError:
+            _lo = None  # type: ignore
+    if _lo is not None:
+        try:
+            pairs = _lo(leg)
+            outcomes = [{"name": n, "price": p} for n, p in pairs]
+        except Exception:
+            outcomes = []
+    else:
+        outcomes = leg.get("bookmakers", [{}])[0].get("markets", [{}])[0].get("outcomes", []) if leg.get("bookmakers") else []
     # SAME selection the scout picked (shared pick, never min-price).
     pick = str(leg.get("_pick") or "").lower()
     sel_out = next((o for o in outcomes if str(o.get("name", "")).lower() == pick), None) if pick else None
