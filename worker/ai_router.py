@@ -154,14 +154,9 @@ class AIRouter:
         start = time.time()
         last_error = None
 
-        # Phase 0: OpenCode Zen first (user's main provider)
-        if not model_pref or model_pref == "zen":
-            for model in self.zen_models:
-                text, err = self.call_zen(model, messages)
-                if text and not err:
-                    elapsed = time.time() - start
-                    return text, model, None, elapsed
-                last_error = err
+        # NOTE 2026-09-11: Zen free tier is locked to the OpenCode client
+        # (MissingSessionID server-side); paid models need a payment method.
+        # Zen stays LAST until the workspace can serve API calls.
         
         # Phase 1: Try Groq models in order
         if not model_pref or model_pref == "groq":
@@ -190,8 +185,8 @@ class AIRouter:
                     return text, model, None, elapsed
                 last_error = err
 
-        # Phase 4: OpenCode Zen free models (kept as late fallback too)
-        if not model_pref:
+        # Phase 4: OpenCode Zen (last: unusable server-side until billing/session)
+        if not model_pref or model_pref == "zen":
             for model in self.zen_models:
                 text, err = self.call_zen(model, messages)
                 if text and not err:

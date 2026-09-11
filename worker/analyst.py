@@ -248,7 +248,7 @@ _PROVIDERS = [None]
 def _rotation():
     """Providers actually keyed (None = full chain). Rebuilt lazily."""
     try:
-        avail = [p for p in ("zen", "groq", "gemini") if _router.has_provider(p)]
+        avail = [p for p in ("groq", "gemini") if _router.has_provider(p)]
         return avail or [None]
     except Exception:
         return [None]
