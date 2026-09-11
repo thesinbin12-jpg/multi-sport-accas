@@ -199,6 +199,11 @@ def _name_variants(team):
     return out[:3]
 
 
+def _lastw(name):
+    parts = str(name or "").split()
+    return parts[-1].lower() if parts else ""
+
+
 def _stem(toks):
     out = []
     for t in toks:
@@ -253,9 +258,59 @@ def get_history(home, away, league="", timeout=15, struct=None):
         return ""
 
 
+_RSS_FEEDS = [
+    "https://www.skysports.com/rss/12040",
+    "https://www.theguardian.com/football/rss",
+]
+_RSS_CACHE: dict = {}
+
+
+def _rss_items():
+    """Sky + Guardian football headlines, fetched once per UTC date. Free, keyless."""
+    import xml.etree.ElementTree as _ET
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if day in _RSS_CACHE:
+        return _RSS_CACHE[day]
+    items = []
+    for url in _RSS_FEEDS:
+        try:
+            r = _rq.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            if r.status_code != 200 or not r.text.strip():
+                continue
+            root = _ET.fromstring(r.text)
+            for it in root.findall(".//item")[:40]:
+                title = (it.findtext("title") or "").strip()
+                desc = re.sub(r"<.*?>", "", it.findtext("description") or "").strip()
+                if title:
+                    items.append((title, desc[:300]))
+        except Exception:
+            continue
+    _RSS_CACHE[day] = items
+    return items
+
+
+def _rss_for(home, away, limit=3):
+    """Headlines naming either club (stemmed last-word match)."""
+    ht = set(_stem([_lastw(home)])) - {''}
+    at = set(_stem([_lastw(away)])) - {''}
+    got = []
+    for title, desc in _rss_items():
+        blob = set(_stem(re.split(r"[\s.\-']+", title.lower())))
+        if (ht and ht & blob) or (at and at & blob):
+            got.append(f"{title}" + (f": {desc[:150]}" if desc else ""))
+            if len(got) >= limit:
+                break
+    return got
+
+
 def get_news(home, away, league="", timeout=20):
     """Team news: DuckDuckGo first (free, unlimited); Tavily only when DDG is thin."""
     q = f"{home} vs {away} {league} prediction team news injuries"
+    rss_bits = []
+    try:
+        rss_bits = _rss_for(home, away)
+    except Exception:
+        pass
     ddg_bits = []
     try:
         r = _rq.post(_DDG_BASE, data={"q": q + " injuries lineup"}, timeout=timeout,
@@ -266,8 +321,10 @@ def get_news(home, away, league="", timeout=20):
             ddg_bits = [t for t in clean if t]
     except Exception:
         pass
+    if rss_bits:
+        ddg_bits = ["RSS: " + b for b in rss_bits] + ddg_bits
     if len(ddg_bits) >= 2:
-        return "DDG: " + " | ".join(ddg_bits)[:1500]
+        return " | ".join(ddg_bits)[:1500]
     # Tavily only when DDG couldn't cover it
     tkey = os.environ.get("TAVILY_API_KEY", "")
     if tkey:
@@ -287,7 +344,7 @@ def get_news(home, away, league="", timeout=20):
         except Exception:
             pass
     if ddg_bits:
-        return "DDG: " + " | ".join(ddg_bits)[:1500]
+        return " | ".join(ddg_bits)[:1500]
     return ""
 
 
