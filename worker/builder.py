@@ -314,12 +314,22 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 from analyst import analyze_finalist
             except ImportError:
                 from worker.analyst import analyze_finalist  # type: ignore
-            for leg in candidates[: max(2, int(getattr(config, "ANALYST_MAX", 10) or 10))]:
+            import concurrent.futures as _cf
+            finalists = candidates[: max(2, int(getattr(config, "ANALYST_MAX", 10) or 10))]
+
+            def _one(ix_leg):
+                ix, leg = ix_leg
                 try:
-                    p, w, a = analyze_finalist(leg, progress_cb=progress_cb)
-                    leg["_swarm"] = (p, w, a)
+                    return ix, leg, analyze_finalist(leg, progress_cb=progress_cb)
                 except Exception:
-                    continue
+                    return ix, leg, None
+
+            with _cf.ThreadPoolExecutor(max_workers=5) as _ex:
+                done = sorted(_ex.map(_one, enumerate(finalists)), key=lambda t: t[0])
+            for _ix, leg, res in done:
+                if res:
+                    p, w, a = res
+                    leg["_swarm"] = (p, w, a)
         except Exception:
             pass
 

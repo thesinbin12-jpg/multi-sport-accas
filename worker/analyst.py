@@ -13,6 +13,7 @@ Any failure degrades gracefully to implied probability — builds never break.
 import os
 import re
 import time
+import threading
 from datetime import datetime, timezone
 
 try:
@@ -81,6 +82,7 @@ def _implied(odds):
 
 _FDO_CACHE: dict = {}
 _FDO_LAST = [0.0]
+_FDO_LOCK = threading.Lock()
 
 
 def _fdo_key():
@@ -96,19 +98,23 @@ def _fdo_get(url, params, timeout=15):
     key = _fdo_key()
     if not key:
         return None
-    wait = 6.0 - (time.time() - _FDO_LAST[0])
-    if wait > 0:
-        time.sleep(wait)
+    with _FDO_LOCK:
+        wait = 6.0 - (time.time() - _FDO_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            r = _rq.get(url, params=params, headers={"X-Auth-Token": key}, timeout=timeout)
+            _FDO_LAST[0] = time.time()
+        except Exception:
+            _FDO_LAST[0] = time.time()
+            return None
     try:
-        r = _rq.get(url, params=params, headers={"X-Auth-Token": key}, timeout=timeout)
-        _FDO_LAST[0] = time.time()
         if r.status_code != 200:
             return None
         d = r.json()
         _FDO_CACHE[ck] = d
         return d
     except Exception:
-        _FDO_LAST[0] = time.time()
         return None
 
 
@@ -284,6 +290,44 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
     return None
 
 
+BATCHES = [
+    ("evidence", ("form", "h2h", "news")),
+    ("context", ("tactics", "motivation", "league")),
+    ("challenge", ("market", "devil", "outside")),
+]
+
+_PID2SYS = {}
+
+
+def _ask_batch(pids, brief):
+    """One LLM call, three persona verdicts. Returns [(pname, score, note)]."""
+    global _PID2SYS
+    if not _PID2SYS:
+        _PID2SYS = {pid: (pn, ps) for pid, pn, ps in PERSONAS}
+    parts = []
+    for pid in pids:
+        pn, ps = _PID2SYS.get(pid, (pid, ""))
+        parts.append(f"[{pn}]\nRole: {ps}")
+    t = _ask(f"{brief}\n\nYou are a panel of three specialists. Give EACH verdict separately in this exact shape:\n"
+              + "\n".join(f"[{_PID2SYS.get(pid, (pid, ''))[0]}]\nSCORE=<0-1>\nNOTE=<one-two sentences with specifics>" for pid in pids)
+              + "\n\nSpecialist briefs:\n" + "\n".join(parts),
+              system="You are a betting analysis panel. Be specific, cite numbers and names, never generic filler.",
+              max_chars=1800)
+    out = []
+    if t:
+        for pid in pids:
+            pn = _PID2SYS.get(pid, (pid, ""))[0]
+            m = re.search(r"\[" + re.escape(pn) + r"\](.*?)(?=\[.+\]|\Z)", t, re.DOTALL)
+            out.append((pn,) + _parse_persona(m.group(1) if m else ""))
+    if len(out) < len(pids):
+        have = {n for n, _, _ in out}
+        for pid in pids:
+            pn = _PID2SYS.get(pid, (pid, ""))[0]
+            if pn not in have:
+                out.append((pn, 0.5, "abstained (batch miss)"))
+    return out
+
+
 def _parse_persona(text):
     if not text:
         return 0.5, "abstained (no response)"
@@ -354,13 +398,12 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
              f"History: {history[:900]}\nNews: {news[:1200]}")
 
     verdicts = []
-    for pid, pname, psys in PERSONAS:
-        time.sleep(2)  # RPM kindness across ~90 calls/build
-        t = _ask(f"{brief}\n\nReply exactly:\nSCORE=<0-1 selection win probability>\nNOTE=<one-two sentences with specifics>",
-                  system=f"You are {pname}. {psys}",
-                  max_chars=600)
-        s, n = _parse_persona(t)
-        verdicts.append((pname, s, n))
+    for _bname, pids in BATCHES:
+        time.sleep(1)  # gentle pacing; threads give the real speedup
+        try:
+            verdicts.extend(_ask_batch(pids, brief))
+        except Exception:
+            continue
     scored = " | ".join(f"{n}={s:.2f} ({note[:120]})" for n, s, note in verdicts)
     weights = _persona_weights()
     wline = ""

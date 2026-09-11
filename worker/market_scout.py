@@ -290,7 +290,9 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
     _msg(f"Scout: {len(fixtures)} fixtures, probing top {min(fdo_budget, len(ranked))} with history…")
 
     scored = []
-    for (hkey, akey), fl in ranked[:max(1, fdo_budget)]:
+
+    def _one_fixture(item):
+        (_hkey, _akey), fl = item
         home = fl[0].get("home_team", "?")
         away = fl[0].get("away_team", "?")
         markets: dict = {}
@@ -299,11 +301,12 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
         try:
             res = score_fixture(home, away, markets)
         except Exception:
-            continue
+            return []
         res_by_market = {}
         for label, name, price, blended, edge, why in res:
             res_by_market.setdefault(label, []).append((name, price, blended, edge, why))
             _msg(f"Scout: {home} vs {away} [{label}] {name}@{price} data {blended} edge {edge:+}")
+        got = []
         for leg in fl:
             label = leg.get("market", "1X2")
             cands = res_by_market.get(label) or []
@@ -330,7 +333,13 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
             leg["_data"] = (blended, edge, why)
             leg["_pick"] = name
             leg["_pick_name"] = orig.get(name, name)
-            scored.append(leg)
+            got.append(leg)
+        return got
+
+    import concurrent.futures as _cf
+    with _cf.ThreadPoolExecutor(max_workers=5) as _ex:
+        for got in _ex.map(_one_fixture, ranked[:max(1, fdo_budget)]):
+            scored.extend(got or [])
     scored.sort(key=lambda l: -((l.get("_data") or (0, 0, ""))[0] + max(0, (l.get("_data") or (0, 0, ""))[1]) * 0.5))
     _msg(f"Scout: {len(scored)} legs data-scored, keeping {min(keep, len(scored))}.")
     return scored[:max(1, keep)]
