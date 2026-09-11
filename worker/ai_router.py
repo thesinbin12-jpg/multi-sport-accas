@@ -148,10 +148,19 @@ class AIRouter:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
+
         # Track timing for logging
         start = time.time()
         last_error = None
+
+        # Phase 0: OpenCode Zen first (user's main provider)
+        if not model_pref or model_pref == "zen":
+            for model in self.zen_models:
+                text, err = self.call_zen(model, messages)
+                if text and not err:
+                    elapsed = time.time() - start
+                    return text, model, None, elapsed
+                last_error = err
         
         # Phase 1: Try Groq models in order
         if not model_pref or model_pref == "groq":
@@ -180,8 +189,8 @@ class AIRouter:
                     return text, model, None, elapsed
                 last_error = err
 
-        # Phase 4: OpenCode Zen free models (server-side HTTPS, needs key)
-        if not model_pref or model_pref == "zen":
+        # Phase 4: OpenCode Zen free models (kept as late fallback too)
+        if not model_pref:
             for model in self.zen_models:
                 text, err = self.call_zen(model, messages)
                 if text and not err:
