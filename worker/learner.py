@@ -806,6 +806,12 @@ def nightly_learn(days_from: int = 5) -> dict:
     """
     init_learner_schema()
     verify_summary = verifier.verify_all_pending(days_from=days_from)
+    pruned = 0
+    try:
+        pruned += db.prune_pending("daily", keep=2)
+        pruned += db.prune_pending("weekly", keep=2)
+    except Exception:
+        pass
     legs = _all_decided_legs()
     patterns = analyze(legs)
     persona = _score_personas(legs)

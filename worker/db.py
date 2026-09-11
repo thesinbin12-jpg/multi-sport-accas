@@ -311,6 +311,38 @@ def update_leg_result(ticket_id: str, match: str, result: str) -> None:
             conn.commit()
 
 
+def prune_pending(kind: str, keep: int = 2) -> int:
+    """Delete oldest pending tickets of a kind, keeping the newest `keep`.
+    Settled (won/lost/dissolved) tickets are never touched. Returns deleted count."""
+    init_schema()
+    with _lock:
+        if _is_postgres():
+            conn = _pg_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM acca_tickets WHERE kind=%s AND status='pending' "
+                            "ORDER BY created_at DESC OFFSET %s", (kind, int(keep)))
+                ids = [r[0] for r in cur.fetchall()]
+                for tid in ids:
+                    cur.execute("DELETE FROM acca_legs WHERE ticket_id=%s", (tid,))
+                    cur.execute("DELETE FROM acca_tickets WHERE id=%s", (tid,))
+                conn.commit()
+                return len(ids)
+            finally:
+                conn.close()
+        else:
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "SELECT id FROM acca_tickets WHERE kind=%s AND status='pending' "
+                          "ORDER BY created_at DESC LIMIT 1000000 OFFSET %s", (kind, int(keep)))
+            ids = [r[0] for r in cur.fetchall()]
+            for tid in ids:
+                _execute(cur, "DELETE FROM acca_legs WHERE ticket_id=%s", (tid,))
+                _execute(cur, "DELETE FROM acca_tickets WHERE id=%s", (tid,))
+            conn.commit()
+            return len(ids)
+
+
 def set_ticket_status(ticket_id: str, status: str) -> None:
     init_schema()
     with _lock:

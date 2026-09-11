@@ -9,7 +9,7 @@ const isFresh = (t) => {
   }
 };
 const KINDS = [
-  { id: 'daily', label: 'Daily', blurb: '4–6 legs, best value today. Settles fast.' },
+  { id: 'daily', label: 'Daily', blurb: 'Up to 20 legs, best value today. Settles fast.' },
   { id: 'weekly', label: 'Weekly', blurb: 'Up to 20 legs, bigger odds, settles over the week.' },
 ];
 
@@ -92,7 +92,7 @@ export default function Home() {
       const res = await fetch('/api/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind }),
+        body: JSON.stringify({ kind, max_legs: 20, use_ai: true }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Build rejected (${res.status})`);
@@ -128,8 +128,8 @@ export default function Home() {
   const visible = tickets.filter((t) =>
     filter === 'D-slip' ? isFresh(t) : (t.status || 'pending') === filter.toLowerCase()
   );
-  const fresh = visible.slice(0, 2);
-  const older = visible.slice(2);
+  const fresh = visible.slice(0, 1);
+  const older = visible.slice(1);
   const totalLegs = tickets.reduce((s, t) => s + (t.legs?.length || 0), 0);
   const best = tickets.length
     ? Math.max(...tickets.map((t) => Number(t.combined_odds) || 0))
@@ -193,7 +193,7 @@ export default function Home() {
           <p className="sheet-note">
             {building
               ? status.message || 'Working…'
-              : `Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. ${activeKind.blurb}`}
+              : `Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. Up to 20 legs — quality decides. ${activeKind.blurb}`}
           </p>
           {error && <p className="sheet-error">{error}</p>}
         </div>

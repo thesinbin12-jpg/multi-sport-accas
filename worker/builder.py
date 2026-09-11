@@ -553,6 +553,10 @@ def build_and_save(max_legs: int | None = None, use_ai: bool = True,
     tickets = build_tickets(max_legs=max_legs, use_ai=use_ai, max_credits=max_credits, progress_cb=progress_cb, kind=kind)
     for t in tickets:
         db.save_ticket(t["id"], t["combined_odds"], t["legs"], t["status"], kind=t.get("kind", "daily"), stake=t.get("stake"))
+    try:
+        db.prune_pending(kind=tickets[0].get("kind", kind) if tickets else kind, keep=2)
+    except Exception:
+        pass
     return tickets
 
 
