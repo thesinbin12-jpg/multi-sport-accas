@@ -120,13 +120,13 @@ export default function Home() {
   }
 
   const counts = {
-    'D-slip': tickets.filter(isFresh).length,
+    'D-slip': tickets.length > 0 ? 1 : 0,
     Pending: tickets.filter((t) => (t.status || 'pending') === 'pending').length,
     Won: tickets.filter((t) => t.status === 'won').length,
     Lost: tickets.filter((t) => t.status === 'lost').length,
   };
   const visible = tickets.filter((t) =>
-    filter === 'D-slip' ? isFresh(t) : (t.status || 'pending') === filter.toLowerCase()
+    filter === 'D-slip' ? true : (t.status || 'pending') === filter.toLowerCase()
   );
   const fresh = visible.slice(0, 1);
   const older = visible.slice(1);
