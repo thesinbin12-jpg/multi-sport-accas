@@ -323,10 +323,20 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         except Exception:
             pass
 
-    # Phase 1: assess every candidate (swarm verdicts already cached above).
+    # Phase 1: assess every candidate. Selection = the scout's data pick
+    # (best blended in the 1.5-7.0 band) — shared by analyst and builder, so
+    # prob/odds/selection can never disagree. Out-of-band legs are dropped.
     assessed = []
     for leg in candidates:
         _enrich_with_fotmob(leg)
+        pick = str(leg.get("_pick") or "").lower()
+        data = (leg.get("_picks") or {}).get(pick) if pick else None
+        if data:
+            try:
+                if not (1.5 <= float(data[2]) <= 7.0):
+                    continue
+            except Exception:
+                continue
         if "_swarm" in leg:
             prob, why = leg["_swarm"][0], leg["_swarm"][1]
             leg["analysis"] = leg["_swarm"][2]
@@ -335,6 +345,8 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             if os.environ.get("TAVILY_API_KEY"):
                 news = _tavily_search(f"{leg.get('home_team')} vs {leg.get('away_team')} {leg.get('league')} prediction injuries")
             prob, why = _ai_assess(leg, news)
+        elif data:
+            prob, why = data[0], f"data model {data[0]:.3f} ({str(data[3])[:160]})"
         else:
             prob, why = _implied_prob(leg.get("best_odds", 2.0)), "implied (AI off)"
         try:
@@ -376,8 +388,25 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             picked = [p for p in picked if p is not worst] + [alt]
     built = []
     for leg, prob, why in picked:
+        # selection = scout pick (band-checked live; prices move, never force).
         outcomes = leg.get("outcomes", []) or []
-        if outcomes:
+        if not outcomes:
+            try:
+                outcomes = ((leg.get("bookmakers") or [{}])[0].get("markets") or [{}])[0].get("outcomes", []) or []
+            except Exception:
+                outcomes = []
+        pick = str(leg.get("_pick") or "").lower()
+        sel_out = next((o for o in outcomes if str(o.get("name", "")).lower() == pick), None) if pick else None
+        if sel_out is not None:
+            try:
+                oprice = float(sel_out.get("price", 0))
+            except Exception:
+                oprice = 0
+            if 1.5 <= oprice <= 7.0:
+                selection, odds = sel_out.get("name"), oprice
+            else:
+                continue
+        elif outcomes:
             fav = min(outcomes, key=lambda o: float(o.get("price", 999)))
             selection, odds = fav.get("name", leg.get("home_team")), float(fav.get("price", leg.get("best_odds", 2.0)))
         else:
@@ -458,7 +487,15 @@ def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
         combined = round(_m.prod(max(float(b["odds"]), 1.01) for b in built), 2)
         prompt = RANK_PROMPT.format(kind=kind, tier="A" if kind == "weekly" else "B",
                                     legs="\n".join(lines)[:3000], combined=combined)
-        out = router.analyze(prompt, system_prompt=RANK_SYSTEM)
+        out = None
+        for _try in range(2):
+            out = router.analyze(prompt, system_prompt=RANK_SYSTEM)
+            _t = out[0] if isinstance(out, tuple) else None
+            _e = out[2] if isinstance(out, tuple) and len(out) > 2 else None
+            if _t and not _e:
+                break
+            import time as _tm
+            _tm.sleep(3)
         text = out[0] if isinstance(out, tuple) else None
         err = out[2] if isinstance(out, tuple) and len(out) > 2 else None
         if err or not text:

@@ -277,11 +277,20 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
     league = leg.get("league", "?")
     market = leg.get("market", "1X2")
     outcomes = leg.get("bookmakers", [{}])[0].get("markets", [{}])[0].get("outcomes", []) if leg.get("bookmakers") else []
-    try:
-        fav = min(outcomes, key=lambda o: float(o.get("price", 999)))
-        selection, odds = fav.get("name"), float(fav.get("price"))
-    except Exception:
-        selection, odds = leg.get("home_team", "?"), float(leg.get("best_odds", 2.0) or 2.0)
+    # SAME selection the scout picked (shared pick, never min-price).
+    pick = str(leg.get("_pick") or "").lower()
+    sel_out = next((o for o in outcomes if str(o.get("name", "")).lower() == pick), None) if pick else None
+    if sel_out is not None:
+        try:
+            selection, odds = sel_out.get("name"), float(sel_out.get("price"))
+        except Exception:
+            selection, odds = leg.get("home_team", "?"), float(leg.get("best_odds", 2.0) or 2.0)
+    else:
+        try:
+            fav = min(outcomes, key=lambda o: float(o.get("price", 999)))
+            selection, odds = fav.get("name"), float(fav.get("price"))
+        except Exception:
+            selection, odds = leg.get("home_team", "?"), float(leg.get("best_odds", 2.0) or 2.0)
     base = _implied(odds)
 
     _msg(f"Analyst: {home} vs {away} ({selection}) — gathering history + news…")

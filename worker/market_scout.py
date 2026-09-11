@@ -294,17 +294,27 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
             cands = res_by_market.get(label) or []
             if not cands:
                 continue
-            # attach the leg's own selection score (match by name, else best of market)
-            sel = None
-            try:
-                fav = min(((leg.get("bookmakers") or [{}])[0].get("markets") or [{}])[0].get("outcomes", []) or [],
-                          key=lambda o: float(o.get("price", 999)))
-                sel = str(fav.get("name", "")).lower()
-            except Exception:
-                pass
-            pick = next((c for c in cands if str(c[0]).lower() == (sel or "").lower()), None) or max(cands, key=lambda c: c[2])
-            _name, _price, blended, edge, why = pick
+            # every outcome scored: {name.lower: (blended, edge, price, why)}.
+            # THE pick = best blended INSIDE the 1.5-7.0 band (never min-price).
+            picks = {}
+            orig = {}
+            for cname, cprice, cblended, cedge, cwhy in cands:
+                try:
+                    p = float(cprice)
+                except Exception:
+                    continue
+                key = str(cname).lower()
+                picks[key] = (cblended, cedge, p, cwhy)
+                orig.setdefault(key, str(cname))
+            if not picks:
+                continue
+            inband = [(n, b, e, p, w) for n, (b, e, p, w) in picks.items() if 1.5 <= p <= 7.0]
+            pool = inband or [(n, b, e, p, w) for n, (b, e, p, w) in picks.items()]
+            name, blended, edge, price, why = max(pool, key=lambda c: (c[1], c[2]))
+            leg["_picks"] = picks
             leg["_data"] = (blended, edge, why)
+            leg["_pick"] = name
+            leg["_pick_name"] = orig.get(name, name)
             scored.append(leg)
     scored.sort(key=lambda l: -((l.get("_data") or (0, 0, ""))[0] + max(0, (l.get("_data") or (0, 0, ""))[1]) * 0.5))
     _msg(f"Scout: {len(scored)} legs data-scored, keeping {min(keep, len(scored))}.")
