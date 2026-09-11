@@ -3,3 +3,4 @@ MEMORY.md
 *.db
 *.sqlite
 __pycache__/
+.env*
