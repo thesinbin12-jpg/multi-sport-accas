@@ -1,4 +1,13 @@
-"""main.py — FastAPI worker: POST /build, GET /status, GET /health (+ /accas, /verify)."""
+"""main.py — FastAPI worker: POST /build, GET /status, GET /health (+ /accas, /verify).
+
+CANONICAL SEQUENCES (draw-predictor pattern, adapted multi-sport acca — keep this order):
+MORNING (build): db.ping -> scan (Betika primary, Smarkets 2nd, Odds API guarded)
+  -> value-zone sort -> learner blocked-leagues -> kickoff window -> analyst swarm
+  (history FDO + news Tavily->DDG + 9 personas + synthesizer, finalists only)
+  -> rank/stake meta-agent (_agentic_stake) -> save -> status.
+EVENING (learn, cron 01:00 Accra): verify_all_pending (Odds API scores +
+  football-data.org fallback) -> learner patterns -> LLM reason/debrief -> persist.
+"""
 import os
 import threading
 import time

@@ -290,6 +290,25 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         pass
     candidates = diverse[: max(12, max_legs * 2)]
 
+    # Analyst swarm (draw-predictor pattern, multi-market): deep verdicts on
+    # finalists only. analyst.py gathers its own history (football-data.org)
+    # + news (Tavily -> DuckDuckGo fallback), so the loop below skips its own
+    # Tavily call + thin _ai_assess whenever a swarm verdict exists.
+    if use_ai and getattr(config, "ANALYST_ON", True):
+        try:
+            try:
+                from analyst import analyze_finalist
+            except ImportError:
+                from worker.analyst import analyze_finalist  # type: ignore
+            for leg in candidates[: max(2, int(getattr(config, "ANALYST_MAX", 10) or 10))]:
+                try:
+                    p, w, a = analyze_finalist(leg, progress_cb=progress_cb)
+                    leg["_swarm"] = (p, w, a)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     built = []
     picked = []  # raw legs already in ticket (same-match guard: one market per match)
     for leg in candidates:
@@ -299,10 +318,16 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             continue
         picked.append(leg)
         _enrich_with_fotmob(leg)
-        news = ""
-        if use_ai and os.environ.get("TAVILY_API_KEY"):
-            news = _tavily_search(f"{leg.get('home_team')} vs {leg.get('away_team')} {leg.get('league')} prediction injuries")
-        prob, why = _ai_assess(leg, news) if use_ai else (_implied_prob(leg.get("best_odds", 2.0)), "implied (AI off)")
+        if "_swarm" in leg:
+            prob, why = leg["_swarm"][0], leg["_swarm"][1]
+            leg["analysis"] = leg["_swarm"][2]
+        elif use_ai:
+            news = ""
+            if os.environ.get("TAVILY_API_KEY"):
+                news = _tavily_search(f"{leg.get('home_team')} vs {leg.get('away_team')} {leg.get('league')} prediction injuries")
+            prob, why = _ai_assess(leg, news)
+        else:
+            prob, why = _implied_prob(leg.get("best_odds", 2.0)), "implied (AI off)"
         # pick favourite outcome = outcome with lowest price
         outcomes = leg.get("outcomes", []) or []
         if outcomes:
@@ -321,6 +346,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             "probability": prob,
             "result": "pending",
             "reason": why,
+            "analysis": leg.get("analysis", ""),
             "commence_time": leg.get("commence_time", ""),
             "bookmaker": leg.get("best_bookmaker", ""),
         })

@@ -23,6 +23,10 @@ FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
 # real stakeable prices). Smarkets exchange is secondary (sharp, wins ties).
 # The Odds API (paid quota) is fallback only, guarded by ODDS_MIN_FLOOR.
 BETIKA_ON = _get("BETIKA_ON", "1") == "1"
+# Analyst swarm (draw-predictor 15-agent pattern, adapted multi-market):
+# deep multi-persona verdicts on shortlisted finalists only (history FDO + news Tavily->DDG).
+ANALYST_ON = _get("ANALYST_ON", "1") == "1"
+ANALYST_MAX = int(_get("ANALYST_MAX", "10"))
 SMARKETS_ON = _get("SMARKETS_ON", "1") == "1"  # Smarkets exchange as 2nd free source
 ODDS_MIN_FLOOR = int(_get("ODDS_MIN_CREDITS_FLOOR", "50"))
 # Scan focus: comma-separated groups (soccer,basketball) and/or sport keys.
