@@ -31,9 +31,10 @@ class AIRouter:
             "gemma-4-31b-it",          # Gemma 4 larger, also free
         ]
         self.or_models = [
+            "nvidia/nemotron-3.5-lightning:free",
             "nvidia/nemotron-3-super-120b-a12b:free",
-            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
             "google/gemma-4-26b-a4b-it:free",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
             "nvidia/nemotron-3-ultra-550b-a55b:free",
         ]
         self.gemini_api_base = "https://generativelanguage.googleapis.com/v1"

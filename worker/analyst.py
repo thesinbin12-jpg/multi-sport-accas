@@ -308,9 +308,16 @@ _PROVIDERS = [None]
 
 
 def _rotation():
-    """Providers actually keyed (None = full chain). Rebuilt lazily."""
+    """Providers actually keyed (None = full chain). OpenRouter first (main),
+    skipped while its ~50/day free budget is spent. Rebuilt lazily."""
     try:
-        avail = [p for p in ("groq", "gemini", "orouter") if _router.has_provider(p)]
+        avail = [p for p in ("groq", "gemini") if _router.has_provider(p)]
+        try:
+            from learner import or_left
+        except ImportError:
+            from worker.learner import or_left  # type: ignore
+        if _router.has_provider("orouter") and or_left() > 0:
+            avail = ["orouter"] + avail
         return avail or [None]
     except Exception:
         return [None]
@@ -323,17 +330,28 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
     if gated:
         try:
             try:
-                from learner import llm_left, log_llm
+                from learner import llm_left, log_llm, or_left, log_or
             except ImportError:
-                from worker.learner import llm_left, log_llm  # type: ignore
-            if llm_left() <= 0:
-                return None
-            log_llm()
+                from worker.learner import llm_left, log_llm, or_left, log_or  # type: ignore
+            _ASK_N[0] += 1
+            provs = _rotation()
+            pref = provs[_ASK_N[0] % len(provs)]
+            if pref == "orouter":
+                if or_left() <= 0:
+                    return None
+                log_or()
+            else:
+                if llm_left() <= 0:
+                    return None
+                log_llm()
         except Exception:
-            pass
-    _ASK_N[0] += 1
-    provs = _rotation()
-    pref = provs[_ASK_N[0] % len(provs)]
+            _ASK_N[0] += 1
+            provs = _rotation()
+            pref = provs[_ASK_N[0] % len(provs)]
+    else:
+        _ASK_N[0] += 1
+        provs = _rotation()
+        pref = provs[_ASK_N[0] % len(provs)]
     for attempt in range(max(1, tries)):
         try:
             text, _model, err, _el = _router.analyze(prompt, system_prompt=system, model_pref=pref)
