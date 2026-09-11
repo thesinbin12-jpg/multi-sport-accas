@@ -9,8 +9,8 @@ import os, json, time, requests
 
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-ZEN_KEY = os.environ.get("OPENCODE_API_KEY", "")
-ZEN_BASE = os.environ.get("OPENCODE_BASE_URL", "https://opencode.ai/zen/v1")
+OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+OR_BASE = "https://openrouter.ai/api/v1"
 
 class AIRouter:
     def __init__(self):
@@ -29,11 +29,9 @@ class AIRouter:
         self.gemma_models = [
             "gemma-4-26b-a4b-it",      # Gemma 4
         ]
-        self.zen_models = [
-            "big-pickle",              # user pick: steadiest availability
-            "nemotron-3-ultra-free",   # fast verdicts
-            "mimo-v2.5-free",          # all-rounder
-            "deepseek-v4-flash-free",  # reasoning
+        self.or_models = [
+            "nvidia/nemotron-3-nano-30b-a3b:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
         ]
         self.gemini_api_base = "https://generativelanguage.googleapis.com/v1"
     
@@ -68,16 +66,27 @@ class AIRouter:
         except Exception as e:
             return None, f"Groq exception: {e}"
     
-    def call_zen(self, model, messages, max_tokens=1024, temperature=0.7):
-        """Call OpenCode Zen (OpenAI-compatible). Needs OPENCODE_API_KEY env."""
-        if not ZEN_KEY:
-            return None, "ZEN_KEY not set"
+    def has_provider(self, name):
+        if name == "groq":
+            return bool(GROQ_KEY)
+        if name == "gemini":
+            return bool(GEMINI_KEY)
+        if name == "orouter":
+            return bool(OR_KEY)
+        return False
+
+    def call_openrouter(self, model, messages, max_tokens=1024, temperature=0.7):
+        """Call OpenRouter (OpenAI-compatible, :free models need only a key)."""
+        if not OR_KEY:
+            return None, "OR_KEY not set"
         try:
             r = requests.post(
-                f"{ZEN_BASE}/chat/completions",
+                f"{OR_BASE}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {ZEN_KEY}",
+                    "Authorization": f"Bearer {OR_KEY}",
                     "Content-Type": "application/json",
+                    "HTTP-Referer": "https://accas-roan.vercel.app",
+                    "X-Title": "multi-sport-accas",
                 },
                 json={
                     "model": model,
@@ -85,28 +94,19 @@ class AIRouter:
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                 },
-                timeout=30,
+                timeout=45,
             )
             if r.status_code == 200:
                 data = r.json()
                 return data["choices"][0]["message"]["content"], None
             elif r.status_code == 429:
-                return None, "Zen rate limited"
+                return None, "OpenRouter rate limited"
             else:
-                return None, f"Zen error {r.status_code}: {r.text[:100]}"
+                return None, f"OpenRouter error {r.status_code}: {r.text[:100]}"
         except requests.exceptions.Timeout:
-            return None, "Zen timeout"
+            return None, "OpenRouter timeout"
         except Exception as e:
-            return None, f"Zen exception: {e}"
-
-    def has_provider(self, name):
-        if name == "groq":
-            return bool(GROQ_KEY)
-        if name == "gemini":
-            return bool(GEMINI_KEY)
-        if name == "zen":
-            return bool(ZEN_KEY)
-        return False
+            return None, f"OpenRouter exception: {e}"
 
     def call_gemini(self, model, prompt, max_tokens=1024):
         """Call Gemini API (Google AI Studio)."""
@@ -185,10 +185,13 @@ class AIRouter:
                     return text, model, None, elapsed
                 last_error = err
 
-        # Phase 4: OpenCode Zen (last: unusable server-side until billing/session)
-        if not model_pref or model_pref == "zen":
-            for model in self.zen_models:
-                text, err = self.call_zen(model, messages)
+        # NOTE 2026-09-11: OpenCode Zen removed — free tier locked to the
+        # OpenCode client (MissingSessionID server-side even with session
+        # header; quota exhausted), paid needs billing. Kept out of chain.
+        # Phase 4: OpenRouter :free models (server-side friendly, needs key)
+        if not model_pref or model_pref == "orouter":
+            for model in self.or_models:
+                text, err = self.call_openrouter(model, messages)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed

@@ -18,7 +18,7 @@ DATABASE_URL = _get("DATABASE_URL")
 # football-data.org (free tier: soccer scores fallback, 10 req/min)
 FOOTBALL_DATA_ORG_KEY = _get("FOOTBALL_DATA_ORG_KEY")
 # OpenCode Zen free models (server-side HTTPS fallback, user adds key on Render)
-OPENCODE_API_KEY = _get("OPENCODE_API_KEY")
+OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 
 # Worker settings
 # Odds sources: Betika bookmaker API is primary (free, keyless, zero quota,
@@ -59,7 +59,7 @@ def as_dict() -> dict:
         "GROQ_API_KEY": masked(GROQ_API_KEY),
         "GEMINI_API_KEY": masked(GEMINI_API_KEY),
         "FOOTBALL_DATA_ORG_KEY": masked(FOOTBALL_DATA_ORG_KEY),
-        "OPENCODE_API_KEY": masked(OPENCODE_API_KEY),
+        "OPENROUTER_API_KEY": masked(OPENROUTER_API_KEY),
         "DATABASE_URL": masked(DATABASE_URL),
         "MAX_LEGS_PER_ACCA": MAX_LEGS_PER_ACCA,
         "MIN_ODDS": MIN_ODDS,
