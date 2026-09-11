@@ -341,5 +341,6 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
         for got in _ex.map(_one_fixture, ranked[:max(1, fdo_budget)]):
             scored.extend(got or [])
     scored.sort(key=lambda l: -((l.get("_data") or (0, 0, ""))[0] + max(0, (l.get("_data") or (0, 0, ""))[1]) * 0.5))
-    _msg(f"Scout: {len(scored)} legs data-scored, keeping {min(keep, len(scored))}.")
+    cov = sum(1 for l in scored if "baseline" not in str((l.get("_data") or (0, 0, ""))[2]))
+    _msg(f"Scout: {len(scored)} legs data-scored, keeping {min(keep, len(scored))}. History coverage: {cov}/{len(scored)} with real form.")
     return scored[:max(1, keep)]

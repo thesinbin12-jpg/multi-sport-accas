@@ -134,11 +134,19 @@ def team_recent_struct(team, limit=8):
     except Exception:
         pass
     try:
-        d = _fdo_get(f"{_FDO_BASE}/teams", {"name": team})
-        teams = (d or {}).get("teams") or []
-        if not teams:
+        best, best_score = None, 0.0
+        for variant in _name_variants(team):
+            d = _fdo_get(f"{_FDO_BASE}/teams", {"name": variant})
+            for cand in ((d or {}).get("teams") or [])[:5]:
+                s = _name_score(team, cand.get("name", ""))
+                s += 0.1 if str(cand.get("name", "")).lower().startswith(str(team or "").lower()[:4]) else 0.0
+                if s > best_score:
+                    best, best_score = cand, s
+            if best_score >= 0.85:
+                break
+        if not best or best_score < 0.45:
             return out
-        tid = teams[0].get("id")
+        tid = best.get("id")
         out["tid"] = tid
         d2 = _fdo_get(f"{_FDO_BASE}/teams/{tid}/matches", {"status": "FINISHED", "limit": limit})
         for m in ((d2 or {}).get("matches") or [])[:limit]:
@@ -161,6 +169,54 @@ def team_recent_struct(team, limit=8):
         except Exception:
             pass
     return out
+
+
+_STOPWORDS = {"fc", "ac", "sc", "fk", "ifk", "sk", "bk", "as", "ss", "us", "cd", "ud",
+              "cf", "afc", "united", "city", "town", "rovers", "wanderers", "athletic",
+              "sporting", "real", "club", "de", "la", "le", "les", "al", "el", "fc-"}
+
+
+def _name_variants(team):
+    toks = re.split(r"[\s.\-']+", str(team or ""))
+    toks = [t for t in toks if t]
+    variants = []
+    full = " ".join(toks)
+    if full:
+        variants.append(full)
+    stripped = [t for t in toks if t.lower() not in _STOPWORDS]
+    if stripped and " ".join(stripped) != full:
+        variants.append(" ".join(stripped))
+    if len(stripped) > 1:
+        variants.append(stripped[-1])
+    elif toks:
+        variants.append(toks[-1])
+    seen, out = set(), []
+    for v in variants:
+        k = v.lower()
+        if k and k not in seen and len(k) >= 3:
+            seen.add(k)
+            out.append(v)
+    return out[:3]
+
+
+def _stem(toks):
+    out = []
+    for t in toks:
+        if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+            t = t[:-1]
+        out.append(t)
+    return out
+
+
+def _name_score(query, candidate):
+    import difflib as _d
+    q = _stem([t for t in re.split(r"[\s.\-']+", str(query or "").lower()) if t not in _STOPWORDS])
+    c = _stem([t for t in re.split(r"[\s.\-']+", str(candidate or "").lower()) if t not in _STOPWORDS])
+    if not q or not c:
+        return 0.0
+    overlap = len(set(q) & set(c)) / max(len(set(q)), 1)
+    seq = _d.SequenceMatcher(None, " ".join(q), " ".join(c)).ratio()
+    return 0.6 * overlap + 0.4 * seq
 
 
 def _struct_to_text(home, away, hs_struct, as_struct):
@@ -254,7 +310,7 @@ _PROVIDERS = [None]
 def _rotation():
     """Providers actually keyed (None = full chain). Rebuilt lazily."""
     try:
-        avail = [p for p in ("groq", "gemini") if _router.has_provider(p)]
+        avail = [p for p in ("groq", "gemini", "orouter") if _router.has_provider(p)]
         return avail or [None]
     except Exception:
         return [None]
