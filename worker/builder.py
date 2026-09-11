@@ -507,7 +507,9 @@ def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
                                     legs="\n".join(lines)[:3000], combined=combined)
         out = None
         for _try in range(2):
-            out = router.analyze(prompt, system_prompt=RANK_SYSTEM)
+            # freshest quota first (OpenRouter), then the full chain
+            _pref = "orouter" if _try == 0 else None
+            out = router.analyze(prompt, system_prompt=RANK_SYSTEM, model_pref=_pref)
             _t = out[0] if isinstance(out, tuple) else None
             _e = out[2] if isinstance(out, tuple) and len(out) > 2 else None
             if _t and not _e:
