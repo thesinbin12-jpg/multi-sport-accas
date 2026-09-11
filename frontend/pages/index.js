@@ -296,6 +296,7 @@ function Slip({ ticket, index, open, onToggle }) {
                 <span className="leg-pick">{leg.selection || 'Pick TBC'}</span>
                 <span className="leg-match">
                   {leg.match || 'Fixture TBC'}{leg.league ? ` — ${leg.league}` : ''}
+                  {leg.commence_time ? ` · ${new Date(leg.commence_time).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}
                   {leg.coverage === 'single-book' ? ' · only on some books' : ''}
                 </span>
               </div>
