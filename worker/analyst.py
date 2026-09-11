@@ -363,6 +363,14 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", 
                 if or_left() <= 0:
                     return None
                 log_or()
+            elif pref == "gemini":
+                try:
+                    from learner import gm_left, log_gm
+                except ImportError:
+                    from worker.learner import gm_left, log_gm  # type: ignore
+                if gm_left() <= 0:
+                    return None
+                log_gm()
             else:
                 if llm_left() <= 0:
                     return None

@@ -321,6 +321,47 @@ def save_cached_form(team: str, struct: dict) -> None:
         pass
 
 
+def gm_left() -> int:
+    """Gemini free calls remaining today (default 30; Google cuts dynamically, stay small)."""
+    try:
+        budget = int(os.environ.get("GEMINI_DAILY", getattr(config, "GEMINI_DAILY", 30) or 30))
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT n FROM acca_llm_usage WHERE day=%s", ("gm-" + datetime.now(timezone.utc).strftime("%Y-%m-%d"),))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        return max(0, budget - (row[0] if row else 0))
+    except Exception:
+        return 10 ** 9
+
+
+def log_gm(n: int = 1) -> None:
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            day = "gm-" + datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if _is_pg():
+                _exec(cur, "INSERT INTO acca_llm_usage (day, n) VALUES (%s, %s) "
+                           "ON CONFLICT (day) DO UPDATE SET n=acca_llm_usage.n+EXCLUDED.n", (day, n))
+            else:
+                _exec(cur, "SELECT n FROM acca_llm_usage WHERE day=%s", (day,))
+                row = cur.fetchone()
+                if row:
+                    _exec(cur, "UPDATE acca_llm_usage SET n=%s WHERE day=%s", (row[0] + n, day))
+                else:
+                    _exec(cur, "INSERT INTO acca_llm_usage (day, n) VALUES (%s,%s)", (day, n))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def or_left() -> int:
     """OpenRouter :free calls remaining today (default 45 of ~50/day free tier)."""
     try:
