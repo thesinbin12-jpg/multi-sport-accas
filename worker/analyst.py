@@ -225,7 +225,20 @@ def _persona_weights() -> dict:
         return {}
 
 
-def _ask(prompt, system="", max_chars=1200, tries=1):
+def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
+    """LLM call with daily budget gate (personas) — synthesizer passes gated=False.
+    When the budget is spent, personas abstain (implied/base carries the leg)."""
+    if gated:
+        try:
+            try:
+                from learner import llm_left, log_llm
+            except ImportError:
+                from worker.learner import llm_left, log_llm  # type: ignore
+            if llm_left() <= 0:
+                return None
+            log_llm()
+        except Exception:
+            pass
     for attempt in range(max(1, tries)):
         try:
             text, _model, err, _el = _router.analyze(prompt, system_prompt=system)
@@ -304,7 +317,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
                   f"{wline}"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
-                  max_chars=1500, tries=3)
+                  max_chars=1500, tries=3, gated=False)
     prob, why, detail = base, f"implied {base} (synthesizer unavailable)", ""
     if synth:
         m = re.search(r"PROB\s*=\s*(0?\.\d+|1(?:\.0)?|0|1)", synth)

@@ -61,7 +61,9 @@ SCHEMA_SQL = [
         odds REAL DEFAULT 1.0,
         probability REAL DEFAULT 0.0,
         result TEXT DEFAULT 'pending',
-        analysis TEXT DEFAULT ''
+        analysis TEXT DEFAULT '',
+        lost_why TEXT DEFAULT '',
+        market TEXT DEFAULT ''
     )
     """,
     """
@@ -129,6 +131,8 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_tickets ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'daily'")
                 cur.execute("ALTER TABLE acca_tickets ADD COLUMN IF NOT EXISTS stake TEXT DEFAULT '{}'")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS analysis TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS lost_why TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS market TEXT DEFAULT ''")
                 conn.commit()
             finally:
                 conn.close()
@@ -145,6 +149,10 @@ def init_schema() -> None:
             leg_cols = [r[1] for r in cur.execute("PRAGMA table_info(acca_legs)").fetchall()]
             if "analysis" not in leg_cols:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN analysis TEXT DEFAULT ''")
+            if "lost_why" not in leg_cols:
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN lost_why TEXT DEFAULT ''")
+            if "market" not in leg_cols:
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN market TEXT DEFAULT ''")
             conn.commit()
 
 
@@ -172,12 +180,12 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
                 cur.execute("DELETE FROM acca_legs WHERE ticket_id = %s", (ticket_id,))
                 for leg in legs:
                     cur.execute(
-                        "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (ticket_id, leg.get("sport", ""), leg.get("league", ""), leg.get("match", ""),
                          leg.get("selection", ""), float(leg.get("odds", 1.0)),
                          float(leg.get("probability", 0.0)), leg.get("result", "pending"),
-                         str(leg.get("analysis", "") or "")[:2000]),
+                         str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or "")),
                     )
                 conn.commit()
             finally:
@@ -189,11 +197,11 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
                      (ticket_id, _now(), float(combined_odds), json.dumps(legs), status, kind, stake_json))
             _execute(cur, "DELETE FROM acca_legs WHERE ticket_id = %s", (ticket_id,))
             for leg in legs:
-                _execute(cur, "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                _execute(cur, "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                          (ticket_id, leg.get("sport", ""), leg.get("league", ""), leg.get("match", ""),
                           leg.get("selection", ""), float(leg.get("odds", 1.0)),
                           float(leg.get("probability", 0.0)), leg.get("result", "pending"),
-                          str(leg.get("analysis", "") or "")[:2000]))
+                          str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or "")))
             conn.commit()
 
 
@@ -300,6 +308,24 @@ def update_leg_result(ticket_id: str, match: str, result: str) -> None:
             conn = _sqlite_conn()
             cur = conn.cursor()
             _execute(cur, "UPDATE acca_legs SET result=%s WHERE ticket_id=%s AND match=%s", (result, ticket_id, match))
+            conn.commit()
+
+
+def set_ticket_status(ticket_id: str, status: str) -> None:
+    init_schema()
+    with _lock:
+        if _is_postgres():
+            conn = _pg_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute("UPDATE acca_tickets SET status=%s WHERE id=%s", (status, ticket_id))
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "UPDATE acca_tickets SET status=%s WHERE id=%s", (status, ticket_id))
             conn.commit()
 
 

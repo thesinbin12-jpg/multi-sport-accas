@@ -153,14 +153,21 @@ def verify():
 
 
 @app.post("/learn")
-def learn():
-    """Nightly learner: verify + find patterns + save debrief. Safe daily."""
+def learn(background: BackgroundTasks):
+    """Nightly learner: verify + patterns + debrief (fast, sync). A spoilt weekly
+    queues a fresh weekly build in the background (same 7-day logic, fewer legs)."""
     try:
         try:
             import learner
         except ImportError:
             from worker import learner  # type: ignore
-        return learner.nightly_learn()
+        out = learner.nightly_learn()
+        spec = (out.get("summary") or {}).get("weekly_rebuild") or out.get("weekly_rebuild")
+        if spec:
+            ceiling = int(spec.get("max_legs", 5))
+            background.add_task(_run_build, ceiling, True, None, "weekly")
+            out["weekly_rebuild_queued"] = True
+        return out
     except Exception as e:
         return {"ok": False, "error": f"{e}\n{traceback.format_exc(limit=3)}"}
 

@@ -104,12 +104,19 @@ def init_learner_schema() -> None:
             updated_at TEXT NOT NULL
         )
         """
+        usage = """
+        CREATE TABLE IF NOT EXISTS acca_llm_usage (
+            day TEXT PRIMARY KEY,
+            n INTEGER NOT NULL DEFAULT 0
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         cur.execute(patterns)
         cur.execute(debrief)
         cur.execute(personas)
+        cur.execute(usage)
         conn.commit()
     finally:
         conn.close()
@@ -187,11 +194,13 @@ def analyze(legs: list) -> dict:
     by_sport: dict[str, list] = {}
     by_band: dict[str, list] = {}
     by_kind: dict[str, list] = {}
+    by_market: dict[str, list] = {}
     for leg in legs:
         by_league.setdefault(leg.get("league") or "unknown", []).append(leg)
         by_sport.setdefault(leg.get("sport") or "unknown", []).append(leg)
         by_band.setdefault(_odds_band(leg.get("odds")), []).append(leg)
         by_kind.setdefault(leg.get("kind") or "daily", []).append(leg)
+        by_market.setdefault(leg.get("market") or "unknown", []).append(leg)
 
     def pack(groups: dict) -> dict:
         out = {}
@@ -205,7 +214,7 @@ def analyze(legs: list) -> dict:
         return out
 
     return {"by_league": pack(by_league), "by_sport": pack(by_sport), "by_band": pack(by_band),
-            "by_kind": pack(by_kind)}
+            "by_kind": pack(by_kind), "by_market": pack(by_market)}
 
 
 def _lost_leg_sample(legs: list, n: int = 12) -> list:
@@ -245,6 +254,47 @@ def _parse_scores(analysis: str) -> dict:
     return out
 
 
+def log_llm(n: int = 1) -> None:
+    """Count an LLM call against today's budget. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if _is_pg():
+                _exec(cur, "INSERT INTO acca_llm_usage (day, n) VALUES (%s, %s) "
+                           "ON CONFLICT (day) DO UPDATE SET n=acca_llm_usage.n+EXCLUDED.n", (day, n))
+            else:
+                _exec(cur, "SELECT n FROM acca_llm_usage WHERE day=%s", (day,))
+                row = cur.fetchone()
+                if row:
+                    _exec(cur, "UPDATE acca_llm_usage SET n=%s WHERE day=%s", (row[0] + n, day))
+                else:
+                    _exec(cur, "INSERT INTO acca_llm_usage (day, n) VALUES (%s,%s)", (day, n))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def llm_left() -> int:
+    """LLM calls remaining in today's budget (default 400). Fail-open: errors mean unlimited."""
+    try:
+        budget = int(os.environ.get("DAILY_LLM_BUDGET", getattr(config, "DAILY_LLM_BUDGET", 400) or 400))
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT n FROM acca_llm_usage WHERE day=%s",
+                  (datetime.now(timezone.utc).strftime("%Y-%m-%d"),))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        return max(0, budget - (row[0] if row else 0))
+    except Exception:
+        return 10 ** 9
 def _score_personas(legs: list) -> dict:
     """Brier-score every persona verdict on settled legs; persist; return weights.
     Weight: 1.0 default (sample < 5); else clamp(mean_brier / persona_brier, 0.5, 1.5).
@@ -426,6 +476,8 @@ def _save_patterns(patterns: dict, decision: dict) -> None:
                          "prefer" if bd == decision["preferred_band"] else ""))
         for kd, p in (patterns.get("by_kind") or {}).items():
             rows.append(("kind", kd, p["sample"], p["wins"], p["rate"], ""))
+        for mk, p in (patterns.get("by_market") or {}).items():
+            rows.append(("market", mk, p["sample"], p["wins"], p["rate"], ""))
         for kind, key, n, w, r, action in rows:
             if _is_pg():
                 _exec(cur, "INSERT INTO acca_patterns (kind, key, sample, wins, rate, action, updated_at) "
@@ -474,6 +526,119 @@ def _last_debrief() -> dict | None:
         conn.close()
 
 
+# ---- weekly lifecycle: watch, dissolve, rebuild (user spec) ----
+
+def _latest_ticket(kind: str, statuses=("pending",)) -> dict | None:
+    try:
+        for t in db.get_tickets(limit=30, kind=kind):
+            if (t.get("status") or "pending") in statuses:
+                return t
+    except Exception:
+        pass
+    return None
+
+
+def weekly_watch() -> dict:
+    """Nightly watch over the active weekly acca. Never raises.
+    holding -> leave it; spoilt (any leg lost) -> dissolve + rebuild spec
+    (fewer legs, lower combined); all won -> mark won."""
+    try:
+        t = _latest_ticket("weekly")
+        if not t:
+            return {"state": "none"}
+        legs = db.get_legs(t["id"])
+        results = [l.get("result") for l in legs]
+        if results and all(r == "won" for r in results):
+            db.set_ticket_status(t["id"], "won")
+            return {"state": "won", "ticket": t["id"]}
+        lost = [l for l in legs if l.get("result") == "lost"]
+        if lost:
+            db.set_ticket_status(t["id"], "dissolved")
+            alive = [l for l in legs if l.get("result") != "lost"]
+            ceiling = max(2, len(legs) - len(lost) - 1) if legs else 5
+            return {"state": "dissolved", "ticket": t["id"],
+                    "lost": [l.get("match") for l in lost],
+                    "rebuild": {"kind": "weekly", "max_legs": ceiling}}
+        return {"state": "holding", "ticket": t["id"],
+                "decided": sum(1 for r in results if r in ("won", "lost")),
+                "total": len(results)}
+    except Exception as e:
+        return {"state": "error", "error": str(e)[:200]}
+
+
+def _explain_losses(legs: list, max_n: int = 6) -> list:
+    """For newly-lost legs: find out WHAT happened (score + web story) and log it.
+    1 LLM call per leg, bounded. Persists to acca_legs.lost_why. Never raises."""
+    out = []
+    try:
+        fresh = [l for l in legs
+                 if l.get("result") == "lost" and not (l.get("lost_why") or "")][:max_n]
+        if not fresh:
+            return out
+        for leg in fresh:
+            why = ""
+            try:
+                ctx = verifier.leg_context(leg.get("match", "")) or {}
+                bits = []
+                for r in (ctx.get("results") or ctx.get("answer") or [])[:3]:
+                    if isinstance(r, dict):
+                        bits.append(f"{r.get('title', '')}: {str(r.get('content', r.get('snippet', '')))[:250]}")
+                    elif isinstance(r, str):
+                        bits.append(r[:250])
+                story = " | ".join(bits)[:1200] or str(ctx.get("answer", ""))[:600]
+                if story:
+                    t, _m = _ask_llm(
+                        f"Match: {leg.get('match')} | Selection was: {leg.get('selection')} @ {leg.get('odds')} "
+                        f"| Swarm had said: {str(leg.get('analysis', ''))[:500]} | Match story: {story}\n"
+                        "In ONE sentence: what actually happened in the match and which factor killed the bet?",
+                        "You are a betting post-mortem analyst. One sentence, specific (score, minute, player, red card, etc.).")
+                    why = (t or "").strip()[:400]
+            except Exception:
+                pass
+            if why:
+                try:
+                    conn = _conn()
+                    try:
+                        cur = conn.cursor()
+                        _exec(cur, "UPDATE acca_legs SET lost_why=%s WHERE ticket_id=%s AND match=%s",
+                              (why, leg.get("ticket_id"), leg.get("match")))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            out.append({"match": leg.get("match"), "why": why or "unexplained"})
+    except Exception:
+        pass
+    return out
+
+
+def get_priors() -> dict:
+    """Empirical model (draw-predictor hybrid idea, no sklearn yet): settled win rates
+    by (market), (odds band), (league) with samples. Scout blends these as prior.
+    Needs >=5 samples per key; below that the key is absent (no vote)."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT kind, key, sample, rate FROM acca_patterns WHERE sample>=5")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        priors: dict = {"market": {}, "band": {}, "league": {}}
+        for kind, key, n, r in rows:
+            if kind == "market":
+                priors["market"][key] = round(float(r), 3)
+            elif kind == "odds_band":
+                priors["band"][key] = round(float(r), 3)
+            elif kind == "league":
+                priors["league"][key] = round(float(r), 3)
+        return priors
+    except Exception:
+        return {"market": {}, "band": {}, "league": {}}
+
+
 # ---- public API ----
 
 def nightly_learn(days_from: int = 5) -> dict:
@@ -490,6 +655,8 @@ def nightly_learn(days_from: int = 5) -> dict:
     prev = _last_debrief()
     decision = reason(patterns, legs, (prev or {}).get("notes", ""), persona)
     _save_patterns(patterns, decision)
+    watch = weekly_watch()
+    lost_stories = _explain_losses(legs)
 
     acc = db.get_accuracy_stats()
     db.record_accuracy(acc["verified_tickets"], acc["won_tickets"], notes="nightly learn")
@@ -502,6 +669,13 @@ def nightly_learn(days_from: int = 5) -> dict:
     notes = f"{header}. {decision.get('notes','')}"
     if lessons:
         notes += f" Lessons: {lessons}"
+    if watch.get("state") == "dissolved":
+        notes += f" Weekly {watch.get('ticket')} DISSOLVED (spoilt: {', '.join(watch.get('lost') or [])}); rebuild queued."
+    elif watch.get("state") == "holding":
+        notes += f" Weekly {watch.get('ticket')} holding ({watch.get('decided')}/{watch.get('total')} decided)."
+    for s in (lost_stories or []):
+        if s.get("why") and s["why"] != "unexplained":
+            notes += f" Lost {s['match']}: {s['why']}."
     if decision.get("llm_model"):
         notes += f" (reasoned by {decision['llm_model']})"
 
@@ -511,10 +685,15 @@ def nightly_learn(days_from: int = 5) -> dict:
         "accuracy": acc,
         "patterns": patterns,
         "personas": persona.get("table"),
+        "weekly": watch,
+        "lost_stories": lost_stories,
         "decision": {k: v for k, v in decision.items()},
     }
     _save_debrief(verify_summary.get("checked", 0), summary, notes)
-    return {"ok": True, "notes": notes, "summary": summary}
+    out = {"ok": True, "notes": notes, "summary": summary}
+    if watch.get("state") == "dissolved" and watch.get("rebuild"):
+        out["weekly_rebuild"] = watch["rebuild"]
+    return out
 
 
 def get_strategy() -> dict:

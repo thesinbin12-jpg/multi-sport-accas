@@ -18,6 +18,22 @@ except ImportError:
     from worker.analyst import team_recent_struct  # type: ignore
 
 
+_PRIORS: dict = {}
+
+
+def _refresh_priors():
+    """Empirical settled-rates prior from the evening learner (per build)."""
+    global _PRIORS
+    try:
+        try:
+            from learner import get_priors
+        except ImportError:
+            from worker.learner import get_priors  # type: ignore
+        _PRIORS = get_priors() or {}
+    except Exception:
+        _PRIORS = {}
+
+
 def _norm(name):
     return str(name or "").strip().lower()
 
@@ -203,8 +219,18 @@ def score_fixture(home, away, markets, progress_cb=None):
             else:
                 data_p, why = imp, "no data model for this market"
             blended, w = _blend(data_p, imp, sample)
-            if w == 0:
+            prior_txt = ""
+            try:
+                mp = (_PRIORS.get("market") or {}).get(label)
+                if mp is not None:
+                    blended = round(blended * 0.85 + float(mp) * 0.15, 4)
+                    prior_txt = f"; settled-{label} prior {float(mp):.2f}"
+            except Exception:
+                pass
+            if w == 0 and not prior_txt:
                 why = f"baseline (no history coverage): implied {imp:.3f}"
+            else:
+                why = why + prior_txt
             out.append((label, name, price, blended, round(blended - imp, 4), why))
     return out
 
@@ -242,6 +268,7 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None):
                     best = p
         return best
     ranked = sorted(fixtures.items(), key=lambda kv: -_fix_val(kv[1]))
+    _refresh_priors()
     _msg(f"Scout: {len(fixtures)} fixtures, probing top {min(fdo_budget, len(ranked))} with history…")
 
     scored = []
