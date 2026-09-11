@@ -279,7 +279,8 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
-                return dt <= cutoff
+                # upcoming only: kickoff within the window ahead, at most 10min past
+                return dt <= cutoff and dt >= now - _td(minutes=10)
             except Exception:
                 return True
 

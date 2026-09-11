@@ -162,7 +162,9 @@ class BetikaOdds:
                             continue
                         dt = datetime.strptime(str(m.get("start_time", "")),
                                                "%Y-%m-%d %H:%M:%S").replace(tzinfo=EAT)
-                        if dt > cutoff or dt < now - timedelta(hours=3):
+                        # time-conscious: only upcoming (10min grace for build latency).
+                        # Morning games already played must never enter a midday slip.
+                        if dt > cutoff or dt < now - timedelta(minutes=10):
                             continue
                         groups = self._outcomes(m)
                         mid = str(m.get("match_id", ""))

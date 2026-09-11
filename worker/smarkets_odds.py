@@ -215,7 +215,8 @@ class SmarketsOdds:
                     dt = datetime.fromisoformat(str(ev.get("start_datetime", "")).replace("Z", "+00:00"))
                 except Exception:
                     continue
-                if dt > cutoff or dt < now - timedelta(hours=3):
+                # time-conscious: only upcoming (10min grace for build latency).
+                if dt > cutoff or dt < now - timedelta(minutes=10):
                     continue
                 legs = self.match_markets(eid, markets)
                 out.extend(legs)
