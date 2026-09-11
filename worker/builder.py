@@ -545,6 +545,14 @@ def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
         err = out[2] if isinstance(out, tuple) and len(out) > 2 else None
         if err or not text:
             return _heuristic_stake(built, kind, str(err or "empty rank reply"))
+        try:
+            try:
+                from learner import log_model as _lm2
+            except ImportError:
+                from worker.learner import log_model as _lm2  # type: ignore
+            _lm2(out[1] if isinstance(out, tuple) and len(out) > 1 else "")
+        except Exception:
+            pass
         import re as _re, json as _js
         m = _re.search(r"\{.*\}", text, _re.DOTALL)
         if not m:

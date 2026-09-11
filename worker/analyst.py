@@ -408,6 +408,14 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", 
                 else:
                     time.sleep(8)
                 continue
+            try:
+                try:
+                    from learner import log_model as _lm
+                except ImportError:
+                    from worker.learner import log_model as _lm  # type: ignore
+                _lm(last_model)
+            except Exception:
+                pass
             return str(text)[:max_chars]
         except Exception as e:
             last_err = str(e)[:200]

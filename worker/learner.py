@@ -128,6 +128,15 @@ def init_learner_schema() -> None:
             error TEXT DEFAULT ''
         )
         """
+        llmmodels = """
+        CREATE TABLE IF NOT EXISTS acca_llm_models (
+            day TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            n INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, provider, model)
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
@@ -138,6 +147,7 @@ def init_learner_schema() -> None:
         cur.execute(usage)
         cur.execute(formcache)
         cur.execute(llmerr)
+        cur.execute(llmmodels)
         conn.commit()
     finally:
         conn.close()
@@ -432,6 +442,78 @@ def recent_llm_errors(limit: int = 10) -> list:
         finally:
             conn.close()
         return [{"ts": r[0], "provider": r[1], "model": r[2], "stage": r[3], "error": r[4]} for r in rows]
+    except Exception:
+        return []
+
+
+def log_model(model: str) -> None:
+    """Count a successful call per (day, provider, model). Provider inferred
+    from router model lists. Never raises."""
+    try:
+        m = str(model or "")
+        provider = "other"
+        try:
+            from ai_router import AIRouter
+            _r = AIRouter()
+            if m in (_r.groq_models or []):
+                provider = "groq"
+            elif m in (_r.gemini_models or []) or m in (_r.gemma_models or []):
+                provider = "gemini"
+            elif m in (_r.or_models or []):
+                provider = "orouter"
+            elif m in NIM_MODELS_LOCAL():
+                provider = "nim"
+        except Exception:
+            pass
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if _is_pg():
+                _exec(cur, "INSERT INTO acca_llm_models (day, provider, model, n) VALUES (%s,%s,%s,1) "
+                           "ON CONFLICT (day, provider, model) DO UPDATE SET n=acca_llm_models.n+1",
+                      (day, provider, m[:120]))
+            else:
+                _exec(cur, "SELECT n FROM acca_llm_models WHERE day=%s AND provider=%s AND model=%s",
+                      (day, provider, m[:120]))
+                row = cur.fetchone()
+                if row:
+                    _exec(cur, "UPDATE acca_llm_models SET n=%s WHERE day=%s AND provider=%s AND model=%s",
+                          (row[0] + 1, day, provider, m[:120]))
+                else:
+                    _exec(cur, "INSERT INTO acca_llm_models (day, provider, model, n) VALUES (%s,%s,%s,1)",
+                          (day, provider, m[:120]))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def NIM_MODELS_LOCAL():
+    try:
+        import os as _os
+        return [m.strip() for m in _os.environ.get(
+            "NIM_MODELS",
+            "mistralai/mistral-nemotron,meta/muse-glimmer-30b,moonshotai/kimi-k3,nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b"
+        ).split(",") if m.strip()]
+    except Exception:
+        return []
+
+
+def model_split(limit: int = 15) -> list:
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT provider, model, n FROM acca_llm_models WHERE day=%s ORDER BY n DESC LIMIT " + str(int(limit)),
+                  (datetime.now(timezone.utc).strftime("%Y-%m-%d"),))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        return [{"provider": r[0], "model": r[1], "n": r[2]} for r in rows]
     except Exception:
         return []
 
@@ -946,6 +1028,7 @@ def latest_insights() -> dict:
         "llm": "agentic" if _llm_available() else "heuristic (no key)",
         "llm_used_today": llm_used_today(),
         "llm_errors": recent_llm_errors(10),
+        "llm_models": model_split(15),
     }
 
 
