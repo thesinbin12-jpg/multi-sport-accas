@@ -110,6 +110,14 @@ def init_learner_schema() -> None:
             n INTEGER NOT NULL DEFAULT 0
         )
         """
+        formcache = """
+        CREATE TABLE IF NOT EXISTS acca_form_cache (
+            team TEXT PRIMARY KEY,
+            week TEXT NOT NULL,
+            data TEXT DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
@@ -117,6 +125,7 @@ def init_learner_schema() -> None:
         cur.execute(debrief)
         cur.execute(personas)
         cur.execute(usage)
+        cur.execute(formcache)
         conn.commit()
     finally:
         conn.close()
@@ -252,6 +261,52 @@ def _parse_scores(analysis: str) -> dict:
     except Exception:
         pass
     return out
+
+
+def _monday() -> str:
+    from datetime import timedelta as _td
+    today = datetime.now(timezone.utc).date()
+    return (today - _td(days=today.weekday())).isoformat()
+
+
+def get_cached_form(team: str) -> dict | None:
+    """This week's FDO form struct for a team, or None (read-through by analyst)."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT data FROM acca_form_cache WHERE team=%s AND week=%s",
+                  (str(team or '').strip().lower(), _monday()))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return json.loads(row[0]) if isinstance(row[0], str) else dict(row[0])
+    except Exception:
+        pass
+    return None
+
+
+def save_cached_form(team: str, struct: dict) -> None:
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            data = json.dumps(struct or {"matches": []})
+            if _is_pg():
+                _exec(cur, "INSERT INTO acca_form_cache (team, week, data, updated_at) VALUES (%s,%s,%s,%s) "
+                           "ON CONFLICT (team) DO UPDATE SET week=EXCLUDED.week, data=EXCLUDED.data, updated_at=EXCLUDED.updated_at",
+                      (str(team or '').strip().lower(), _monday(), data, _now()))
+            else:
+                _exec(cur, "INSERT OR REPLACE INTO acca_form_cache (team, week, data, updated_at) VALUES (%s,%s,%s,%s)",
+                      (str(team or '').strip().lower(), _monday(), data, _now()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def log_llm(n: int = 1) -> None:

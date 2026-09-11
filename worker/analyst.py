@@ -113,9 +113,20 @@ def _fdo_get(url, params, timeout=15):
 
 
 def team_recent_struct(team, limit=8):
-    """Structured recent finished matches for a team (shared by scout + analyst, cached).
-    Returns {'matches': [{home, away, hs, aws, comp}], 'tid': id} — empty matches on miss."""
+    """Structured recent finished matches for a team (shared by scout + analyst).
+    Read-through weekly DB cache: Monday's fetch serves all week; FDO (10/min)
+    is only hit for uncached teams. Returns {'matches': [...], 'tid': id}."""
     out = {"matches": [], "tid": None}
+    try:
+        try:
+            from learner import get_cached_form, save_cached_form
+        except ImportError:
+            from worker.learner import get_cached_form, save_cached_form  # type: ignore
+        hit = get_cached_form(team)
+        if isinstance(hit, dict) and hit.get("matches"):
+            return hit
+    except Exception:
+        pass
     try:
         d = _fdo_get(f"{_FDO_BASE}/teams", {"name": team})
         teams = (d or {}).get("teams") or []
@@ -138,6 +149,11 @@ def team_recent_struct(team, limit=8):
             })
     except Exception:
         pass
+    if out["matches"]:
+        try:
+            save_cached_form(team, out)
+        except Exception:
+            pass
     return out
 
 
