@@ -242,6 +242,16 @@ def _persona_weights() -> dict:
 
 
 _ASK_N = [0]
+_PROVIDERS = [None]
+
+
+def _rotation():
+    """Providers actually keyed (None = full chain). Rebuilt lazily."""
+    try:
+        avail = [p for p in ("groq", "gemini", "zen") if _router.has_provider(p)]
+        return avail or [None]
+    except Exception:
+        return [None]
 
 
 def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
@@ -260,7 +270,8 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
         except Exception:
             pass
     _ASK_N[0] += 1
-    pref = "gemini" if _ASK_N[0] % 2 else "groq"
+    provs = _rotation()
+    pref = provs[_ASK_N[0] % len(provs)]
     for attempt in range(max(1, tries)):
         try:
             text, _model, err, _el = _router.analyze(prompt, system_prompt=system, model_pref=pref)

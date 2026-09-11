@@ -9,6 +9,8 @@ import os, json, time, requests
 
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+ZEN_KEY = os.environ.get("OPENCODE_API_KEY", "")
+ZEN_BASE = os.environ.get("OPENCODE_BASE_URL", "https://opencode.ai/zen/v1")
 
 class AIRouter:
     def __init__(self):
@@ -26,6 +28,11 @@ class AIRouter:
         ]
         self.gemma_models = [
             "gemma-4-26b-a4b-it",      # Gemma 4
+        ]
+        self.zen_models = [
+            "nemotron-3-ultra-free",   # fast verdicts
+            "mimo-v2.5-free",          # all-rounder
+            "deepseek-v4-flash-free",  # reasoning
         ]
         self.gemini_api_base = "https://generativelanguage.googleapis.com/v1"
     
@@ -60,6 +67,46 @@ class AIRouter:
         except Exception as e:
             return None, f"Groq exception: {e}"
     
+    def call_zen(self, model, messages, max_tokens=1024, temperature=0.7):
+        """Call OpenCode Zen (OpenAI-compatible). Needs OPENCODE_API_KEY env."""
+        if not ZEN_KEY:
+            return None, "ZEN_KEY not set"
+        try:
+            r = requests.post(
+                f"{ZEN_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {ZEN_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                },
+                timeout=30,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data["choices"][0]["message"]["content"], None
+            elif r.status_code == 429:
+                return None, "Zen rate limited"
+            else:
+                return None, f"Zen error {r.status_code}: {r.text[:100]}"
+        except requests.exceptions.Timeout:
+            return None, "Zen timeout"
+        except Exception as e:
+            return None, f"Zen exception: {e}"
+
+    def has_provider(self, name):
+        if name == "groq":
+            return bool(GROQ_KEY)
+        if name == "gemini":
+            return bool(GEMINI_KEY)
+        if name == "zen":
+            return bool(ZEN_KEY)
+        return False
+
     def call_gemini(self, model, prompt, max_tokens=1024):
         """Call Gemini API (Google AI Studio)."""
         if not GEMINI_KEY:
@@ -128,6 +175,15 @@ class AIRouter:
         if not model_pref or model_pref == "gemma":
             for model in self.gemma_models:
                 text, err = self.call_gemini(model, prompt)
+                if text and not err:
+                    elapsed = time.time() - start
+                    return text, model, None, elapsed
+                last_error = err
+
+        # Phase 4: OpenCode Zen free models (server-side HTTPS, needs key)
+        if not model_pref or model_pref == "zen":
+            for model in self.zen_models:
+                text, err = self.call_zen(model, messages)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed
