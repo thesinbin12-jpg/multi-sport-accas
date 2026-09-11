@@ -30,6 +30,7 @@ class AIRouter:
             "gemma-4-26b-a4b-it",      # Gemma 4
         ]
         self.zen_models = [
+            "big-pickle",              # user pick: steadiest availability
             "nemotron-3-ultra-free",   # fast verdicts
             "mimo-v2.5-free",          # all-rounder
             "deepseek-v4-flash-free",  # reasoning
