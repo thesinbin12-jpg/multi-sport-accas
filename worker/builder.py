@@ -472,8 +472,16 @@ Pick the final order (best first, drop any leg you distrust by omitting it, keep
 {{"order": [0, 2, 1], "stake_units": 1.5, "confidence": 0.62, "stake_note": "one short sentence"}}"""
 
 
-def _heuristic_stake(built: list, kind: str) -> dict:
+def _heuristic_stake(built: list, kind: str, why: str = "") -> dict:
     """Kelly-capped fallback when LLM is unavailable. Never stakes big."""
+    try:
+        try:
+            from learner import log_llm_error
+        except ImportError:
+            from worker.learner import log_llm_error  # type: ignore
+        log_llm_error("rank", "", "rank", (why or "rank LLM failed")[:200])
+    except Exception:
+        pass
     import math as _m
     combined = _m.prod(max(float(b["odds"]), 1.01) for b in built)
     avg_p = sum(float(b.get("probability") or 0) for b in built) / max(len(built), 1)
@@ -509,7 +517,7 @@ def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
         text = out[0] if isinstance(out, tuple) else None
         err = out[2] if isinstance(out, tuple) and len(out) > 2 else None
         if err or not text:
-            return _heuristic_stake(built, kind)
+            return _heuristic_stake(built, kind, str(err or "empty rank reply"))
         import re as _re, json as _js
         m = _re.search(r"\{.*\}", text, _re.DOTALL)
         if not m:

@@ -305,6 +305,28 @@ def _persona_weights() -> dict:
 
 _ASK_N = [0]
 _PROVIDERS = [None]
+_RPM: dict = {}
+_RPM_LOCK = threading.Lock()
+_RPM_LIMITS = {"groq": 25, "gemini": 20, "orouter": 12, None: 15}
+
+
+def _rpm_wait(pref):
+    """Per-provider per-minute throttle shared across threads. Never raises."""
+    try:
+        limit = _RPM_LIMITS.get(pref, 15)
+        with _RPM_LOCK:
+            now = time.time()
+            b = _RPM.get(pref)
+            if not b or now - b[0] >= 60:
+                _RPM[pref] = [now, 1]
+                return
+            if b[1] >= limit:
+                time.sleep(max(0.0, 60 - (now - b[0])))
+                _RPM[pref] = [time.time(), 1]
+            else:
+                b[1] += 1
+    except Exception:
+        pass
 
 
 def _rotation():
@@ -323,7 +345,7 @@ def _rotation():
         return [None]
 
 
-def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
+def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm"):
     """LLM call with daily budget gate (personas) — synthesizer passes gated=False.
     Provider rotation (Groq/Gemini alternate) spreads rate-limit load.
     When the budget is spent, personas abstain (implied/base carries the leg)."""
@@ -352,15 +374,30 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True):
         _ASK_N[0] += 1
         provs = _rotation()
         pref = provs[_ASK_N[0] % len(provs)]
+    _rpm_wait(pref)
+    last_model, last_err = "", ""
     for attempt in range(max(1, tries)):
         try:
             text, _model, err, _el = _router.analyze(prompt, system_prompt=system, model_pref=pref)
+            last_model, last_err = str(_model or ""), str(err or "")
             if err or not text:
-                time.sleep(8)
+                if "429" in last_err or "rate" in last_err.lower() or "limit" in last_err.lower():
+                    time.sleep(20)
+                else:
+                    time.sleep(8)
                 continue
             return str(text)[:max_chars]
-        except Exception:
+        except Exception as e:
+            last_err = str(e)[:200]
             time.sleep(8)
+    try:
+        try:
+            from learner import log_llm_error
+        except ImportError:
+            from worker.learner import log_llm_error  # type: ignore
+        log_llm_error(str(pref or "chain"), last_model, stage, last_err)
+    except Exception:
+        pass
     return None
 
 
@@ -491,7 +528,14 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
                   f"{wline}"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
-                  max_chars=1500, tries=3, gated=False)
+                  max_chars=1500, tries=3, gated=False, stage="synth")
+    if not synth:
+        # layered fallback: one full-chain single verdict before implied
+        last = _ask(f"{brief}\n\nReply with exactly two lines:\nPROB=<0-1 selection win probability>\nWHY=<2-4 sentences citing specific teams, players, numbers>",
+                    system="You are a senior betting analyst. Be specific, cite numbers and names.",
+                    max_chars=600, tries=2, gated=False, stage="single")
+        if last:
+            synth = last
     prob, why, detail = base, f"implied {base} (synthesizer unavailable)", ""
     if synth:
         m = re.search(r"PROB\s*=\s*(0?\.\d+|1(?:\.0)?|0|1)", synth)

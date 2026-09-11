@@ -118,14 +118,26 @@ def init_learner_schema() -> None:
             updated_at TEXT NOT NULL
         )
         """
+        llmerr = """
+        CREATE TABLE IF NOT EXISTS acca_llm_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            provider TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            stage TEXT DEFAULT '',
+            error TEXT DEFAULT ''
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+            llmerr = llmerr.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
         cur.execute(patterns)
         cur.execute(debrief)
         cur.execute(personas)
         cur.execute(usage)
         cur.execute(formcache)
+        cur.execute(llmerr)
         conn.commit()
     finally:
         conn.close()
@@ -348,6 +360,39 @@ def log_or(n: int = 1) -> None:
             conn.close()
     except Exception:
         pass
+
+
+def log_llm_error(provider: str, model: str, stage: str, error: str) -> None:
+    """Persist a provider failure for /insights visibility. Bounded table. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "INSERT INTO acca_llm_errors (ts, provider, model, stage, error) VALUES (%s,%s,%s,%s,%s)",
+                  (_now(), str(provider or "")[:40], str(model or "")[:80],
+                   str(stage or "")[:40], str(error or "")[:300]))
+            _exec(cur, "DELETE FROM acca_llm_errors WHERE id NOT IN (SELECT id FROM acca_llm_errors ORDER BY id DESC LIMIT 50)")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def recent_llm_errors(limit: int = 10) -> list:
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT ts, provider, model, stage, error FROM acca_llm_errors ORDER BY id DESC LIMIT %s" % int(limit))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        return [{"ts": r[0], "provider": r[1], "model": r[2], "stage": r[3], "error": r[4]} for r in rows]
+    except Exception:
+        return []
 
 
 def log_llm(n: int = 1) -> None:
@@ -853,6 +898,7 @@ def latest_insights() -> dict:
         "strategy": get_strategy(),
         "llm": "agentic" if _llm_available() else "heuristic (no key)",
         "llm_used_today": llm_used_today(),
+        "llm_errors": recent_llm_errors(10),
     }
 
 
