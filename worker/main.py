@@ -1,5 +1,7 @@
 """main.py — FastAPI worker: POST /build, GET /status, GET /health (+ /accas, /verify)."""
+import os
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 
@@ -65,6 +67,27 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
         _set_state(status="error", finished_at=datetime.now(timezone.utc).isoformat(),
                    error=f"{e}\n{traceback.format_exc(limit=3)}",
                    message=f"build failed: {e}")
+
+
+def _self_ping_loop():
+    """Layer 2 keepalive: ping our own /health every 10 min so Render free
+    never idles. Runs only on Render (RENDER_EXTERNAL_URL is auto-set there,
+    absent locally). Layer 1 is the cron-job.org keepalive job."""
+    import urllib.request
+    base = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    url = (base or "https://multisportaccas.onrender.com") + "/health"
+    while True:
+        try:
+            time.sleep(600)
+            urllib.request.urlopen(url, timeout=20).read(16)
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+def _startup():
+    if os.environ.get("RENDER_EXTERNAL_URL"):
+        threading.Thread(target=_self_ping_loop, daemon=True).start()
 
 
 @app.get("/health")
