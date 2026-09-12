@@ -36,12 +36,19 @@ def verify_all_pending(days_from: int = 3) -> dict:
 
     won = lost = still_pending = 0
     contexts: list = []
+    src_tally: dict = {}
+    unres_sample: list = []
     for t in tickets:
         try:
             r = verify_ticket_with_selection(t["id"], days_from=days_from)
         except Exception:
             still_pending += 1
             continue
+        for k, v in (r.get("settle_sources") or {}).items():
+            src_tally[k] = src_tally.get(k, 0) + v
+        for m in (r.get("unresolved") or [])[:2]:
+            if len(unres_sample) < 8 and m not in unres_sample:
+                unres_sample.append(m)
         if r["status"] == "pending":
             still_pending += 1
             if len(contexts) < 5:
@@ -74,7 +81,8 @@ def verify_all_pending(days_from: int = 3) -> dict:
             db.record_verification(t["id"], ticket_won, correct, len(legs), {})
     except Exception:
         pass
-    out: dict = {"checked": won + lost, "won": won, "lost": lost, "pending": still_pending}
+    out: dict = {"checked": won + lost, "won": won, "lost": lost, "pending": still_pending,
+                 "settle_sources": src_tally, "unresolved_sample": unres_sample}
     if contexts:
         out["contexts"] = contexts
     return out
@@ -186,6 +194,10 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                 _lg.getLogger("acca").info("settle %s via FotMob %s", match[:60], fm)
             except Exception:
                 pass
+            try:
+                (leg or {}).__setitem__("_src", "fotmob") if isinstance(leg, dict) else None
+            except Exception:
+                pass
             return fm
     except Exception as e:
         try:
@@ -207,6 +219,10 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                 scores = {str(s.get("name", "")).lower(): s.get("score") for s in g.get("scores", []) or []}
                 hs, aws = _num(scores.get(h)), _num(scores.get(a))
                 if hs is not None and aws is not None:
+                    try:
+                        (leg or {}).__setitem__("_src", "oddsapi") if isinstance(leg, dict) else None
+                    except Exception:
+                        pass
                     return hs, aws
     # Fallback: football-data.org full-time scores
     key = config.FOOTBALL_DATA_ORG_KEY if hasattr(config, "FOOTBALL_DATA_ORG_KEY") else ""
@@ -231,6 +247,10 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                     ft = (m.get("score") or {}).get("fullTime", {}) or {}
                     hs, aws = _num(ft.get("home")), _num(ft.get("away"))
                     if hs is not None and aws is not None:
+                        try:
+                            (leg or {}).__setitem__("_src", "fdo") if isinstance(leg, dict) else None
+                        except Exception:
+                            pass
                         return hs, aws
             except Exception:
                 continue
@@ -244,10 +264,14 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
     cache: dict[str, list] = {}
     correct = 0
     decided = 0
+    sources: dict = {}
+    unresolved: list = []
     for leg in legs:
         score = _resolve_score(leg.get("match", ""), scanner, cache, days_from, leg)
         if score is None:
+            unresolved.append(leg.get("match", "?"))
             continue
+        sources[leg.get("_src", "unknown")] = sources.get(leg.get("_src", "unknown"), 0) + 1
         hs, aws = score
         sel = str(leg.get("selection", ""))
         market_hit = _settle_leg(sel, hs, aws)
@@ -267,12 +291,13 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
         if market_hit:
             correct += 1
     total = len(legs)
+    base = {"ticket_id": ticket_id, "correct": correct, "total": total,
+            "settle_sources": sources, "unresolved": unresolved[:8]}
     if decided < total:
-        return {"ticket_id": ticket_id, "status": "pending", "correct": correct, "total": total}
+        return {**base, "status": "pending"}
     ticket_won = (correct == total and total > 0)
     db.record_verification(ticket_id, ticket_won, correct, total, {})
-    return {"ticket_id": ticket_id, "status": "won" if ticket_won else "lost",
-            "correct": correct, "total": total}
+    return {**base, "status": "won" if ticket_won else "lost"}
 
 
 def _keys_for_leg(leg: dict) -> list:
