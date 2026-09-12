@@ -277,10 +277,17 @@ def verify(request: Request):
 
 @app.post("/learn")
 def learn(background: BackgroundTasks, request: Request):
+    """Nightly learner, fire-and-forget (Vercel kills long calls): runs in
+    background including any weekly rebuild, watch /status + /insights."""
     if not _authed(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-    """Nightly learner: verify + patterns + debrief (fast, sync). A spoilt weekly
-    queues a fresh weekly build in the background (same 7-day logic, fewer legs)."""
+    _set_state(status="running", started_at=datetime.now(timezone.utc).isoformat(),
+               message="nightly learn queued…", error=None)
+    background.add_task(_run_learn)
+    return {"ok": True, "message": "nightly learn started"}
+
+
+def _run_learn():
     try:
         try:
             import learner
@@ -290,11 +297,18 @@ def learn(background: BackgroundTasks, request: Request):
         spec = (out.get("summary") or {}).get("weekly_rebuild") or out.get("weekly_rebuild")
         if spec:
             ceiling = int(spec.get("max_legs", 5))
-            background.add_task(_run_build, ceiling, True, None, "weekly")
-            out["weekly_rebuild_queued"] = True
-        return out
+            try:
+                import builder as _b2
+            except ImportError:
+                from worker import builder as _b2  # type: ignore
+            _b2.build_and_save(max_legs=ceiling, use_ai=True, max_credits=None, kind="weekly")
+            out["weekly_rebuild_done"] = True
+        _set_state(status="done", finished_at=datetime.now(timezone.utc).isoformat(),
+                   message="nightly learn done", error=None)
     except Exception as e:
-        return {"ok": False, "error": f"{e}\n{traceback.format_exc(limit=3)}"}
+        _set_state(status="error", finished_at=datetime.now(timezone.utc).isoformat(),
+                   error="%s\n%s" % (e, traceback.format_exc(limit=3)),
+                   message="learn failed: %s" % e)
 
 
 @app.get("/insights")
