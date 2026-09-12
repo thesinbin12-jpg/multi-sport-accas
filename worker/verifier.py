@@ -187,8 +187,12 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
             except Exception:
                 pass
             return fm
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            import logging as _lg2
+            _lg2.getLogger("acca").warning("fotmob skip %s: %s", match[:50], str(e)[:120])
+        except Exception:
+            pass
     keys = _keys_for_leg(leg or {})
     for sk in keys:
         if sk not in cache:
