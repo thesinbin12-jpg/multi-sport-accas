@@ -141,6 +141,7 @@ def diag(request: Request, home: str = "", away: str = "", league: str = "", dat
     if not _authed(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     trace: dict = {"fixture": f"{home} vs {away}", "league": league, "date": date}
+    trace["serving"] = os.environ.get("RENDER_GIT_COMMIT", "local")[:9]
     try:
         try:
             import espn as _espn
