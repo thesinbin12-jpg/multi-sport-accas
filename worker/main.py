@@ -135,6 +135,48 @@ def _startup():
         threading.Thread(target=_self_ping_loop, daemon=True).start()
 
 
+@app.get("/diag")
+def diag(request: Request, home: str = "", away: str = "", league: str = "", date: str = ""):
+    """Trace score-source resolution for one fixture (agentic observability)."""
+    if not _authed(request):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    trace: dict = {"fixture": f"{home} vs {away}", "league": league, "date": date}
+    try:
+        try:
+            import espn as _espn
+        except ImportError:
+            from worker import espn as _espn  # type: ignore
+        slugs = _espn._slugs_for(league) or ["eng.1", "esp.1", "usa.nwsl"]
+        trace["espn_slugs"] = slugs
+        try:
+            base = datetime.fromisoformat(date[:10]).date() if date else datetime.now(timezone.utc).date()
+        except Exception:
+            base = datetime.now(timezone.utc).date()
+        pls = []
+        for slug in slugs[:4]:
+            try:
+                evs = _espn._day_scores(slug, base)
+                names = [(h, a) for h, a, _hs, _aws in evs]
+                pls.append({"slug": slug, "events": len(evs),
+                            "same_date": [f"{h} vs {a}" for h, a in names
+                                         if home.lower()[:4] in h.lower() or away.lower()[:4] in a.lower()]})
+            except Exception as e:
+                pls.append({"slug": slug, "error": str(e)[:120]})
+        trace["espn"] = pls
+        trace["espn_find"] = _espn.find_score(home, away, league_hint=league, ref_date=base)
+    except Exception as e:
+        trace["espn_error"] = str(e)[:200]
+    try:
+        try:
+            from fotmob import _fm_day
+        except ImportError:
+            from worker.fotmob import _fm_day  # type: ignore
+        trace["fotmob_day_size"] = len(_fm_day(base))
+    except Exception as e:
+        trace["fotmob_error"] = str(e)[:200]
+    return {"ok": True, "trace": trace}
+
+
 @app.get("/logs")
 def logs(request: Request, tail: int = 200):
     """Recent worker log lines (self-served; Render has no public logs API)."""
