@@ -202,8 +202,15 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                 except Exception:
                     pass
                 return _es
-        except Exception:
-            pass
+        except Exception as e_espn:
+            try:
+                try:
+                    from learner import source_record as _sr1
+                except ImportError:
+                    from worker.learner import source_record as _sr1  # type: ignore
+                _sr1("scores-espn", False, 0, ("import:" if "import" in str(type(e_espn).__name__).lower() or "No module" in str(e_espn) else "") + str(e_espn)[:150])
+            except Exception:
+                pass
     if _use_fm:
         try:
             try:
@@ -236,6 +243,14 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
             try:
                 import logging as _lg2
                 _lg2.getLogger("acca").warning("fotmob skip %s: %s", match[:50], str(e)[:120])
+            except Exception:
+                pass
+            try:
+                try:
+                    from learner import source_record as _sr2
+                except ImportError:
+                    from worker.learner import source_record as _sr2  # type: ignore
+                _sr2("scores-fotmob", False, 0, str(e)[:150])
             except Exception:
                 pass
     keys = _keys_for_leg(leg or {})
