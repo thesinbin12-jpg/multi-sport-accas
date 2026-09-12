@@ -9,6 +9,8 @@ import requests as _rq
 from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer/%s/scoreboard"
+_UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+       "Chrome/120.0 Mobile Safari/537.36")
 
 # (Betika category/competition keyword) -> ESPN league slugs to try
 LEAGUES = {
@@ -40,6 +42,18 @@ LEAGUES = {
 }
 
 _DAY: dict = {}
+_SESS = None
+
+
+def _session():
+    global _SESS
+    if _SESS is None:
+        try:
+            from curl_cffi import requests as _cr
+            _SESS = _cr.Session(impersonate="chrome120")
+        except ImportError:
+            _SESS = False
+    return _SESS
 
 
 def _day_scores(slug, day):
@@ -48,7 +62,13 @@ def _day_scores(slug, day):
         return _DAY[key]
     out = []
     try:
-        r = _rq.get(BASE % slug, params={"dates": day.strftime("%Y%m%d")}, timeout=20)
+        s = _session()
+        if s:
+            r = s.get(BASE % slug, params={"dates": day.strftime("%Y%m%d")},
+                      headers={"User-Agent": _UA, "Accept": "application/json"}, timeout=20)
+        else:
+            r = _rq.get(BASE % slug, params={"dates": day.strftime("%Y%m%d")},
+                        headers={"User-Agent": _UA, "Accept": "application/json"}, timeout=20)
         if r.status_code == 200:
             for e in (r.json().get("events") or []):
                 try:
