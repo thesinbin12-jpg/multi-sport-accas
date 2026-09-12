@@ -695,9 +695,9 @@ def _agentic_stake(built: list, kind: str, use_ai: bool, progress_cb=None) -> di
             pass
         _tm.sleep(10)
         out = None
-        for _try, _pref in enumerate([_jp, _jp, "nim", None]):
+        for _try, _pref in enumerate([_jp, _jp, "nim", "nim", None]):
             if _try:
-                _tm.sleep((0, 15, 20, 30)[_try] if _try < 4 else 30)
+                _tm.sleep((0, 15, 20, 25, 30)[_try] if _try < 5 else 30)
             # honest budget gates: judge spends from its lane's quota
             try:
                 try:
