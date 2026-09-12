@@ -207,6 +207,9 @@ def find_finished_score(home, away, ref_date=None, span=2, match_fn=None):
     """(hs, aws) or None. Searches ref_date ± span days. Keyless, ~185 leagues.
     match_fn(h1, a1, h2, a2) fuzzy-matches names; default handles exact/contains."""
     def _default(h1, a1, h2, a2):
+        import re as _re2
+        h1 = _re2.sub(r"\s*\([^)]*\)", "", h1).strip()
+        a1 = _re2.sub(r"\s*\([^)]*\)", "", a1).strip()
         return (h1 == h2 and a1 == a2) or (h1 in h2 and a1 in a2) or (h2 in h1 and a2 in a1)
     mf = match_fn or _default
     try:

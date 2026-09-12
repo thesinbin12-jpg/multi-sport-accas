@@ -176,8 +176,10 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
             ref = datetime.fromisoformat(str(ct).replace("Z", "+00:00")).date() if ct else None
         except Exception:
             ref = None
+        import re as _re3
+        _strip = lambda s: _re3.sub(r"\s*\([^)]*\)", "", str(s or "")).strip()
         fm = find_finished_score(home, away, ref_date=ref,
-                                  match_fn=lambda h, a, hn, an: _names_match(h, hn) and _names_match(a, an))
+                                  match_fn=lambda h, a, hn, an: _names_match(_strip(h), hn) and _names_match(_strip(a), an))
         if fm:
             return fm
     except Exception:
