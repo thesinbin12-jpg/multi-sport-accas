@@ -751,4 +751,6 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
         detail = "; ".join(f"{n}: {note[:150]}" for n, _s, note in verdicts)[:1500]
     scores = "|".join(f"{n}={s:.2f}" for n, s, _note in verdicts)
     detail = f"{detail} || SCORES: {scores}"[:1800]
+    if sim_text:
+        detail = f"{sim_text} || {detail}"[:2200]
     return prob, why, detail

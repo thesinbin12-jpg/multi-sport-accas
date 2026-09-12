@@ -406,7 +406,7 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
     with _cf.ThreadPoolExecutor(max_workers=5) as _ex:
         for got in _ex.map(lambda it: _one_fixture(it, fast=False), _top_items):
             scored.extend(got or [])
-    scored.sort(key=lambda l: -((l.get("_data") or (0, 0, ""))[0] + max(0, (l.get("_data") or (0, 0, ""))[1]) * 0.5))
+    scored.sort(key=lambda l: -((_d := (l.get("_data") or (0, 0, "")))[0] + max(-0.05, _d[1]) * 1.5))
     cov = sum(1 for l in scored if "baseline" not in str((l.get("_data") or (0, 0, ""))[2]))
     _msg(f"Scout: {len(scored)} legs data-scored, keeping {min(keep, len(scored))}. History coverage: {cov}/{len(scored)} with real form.")
     return scored[:max(1, keep)]
