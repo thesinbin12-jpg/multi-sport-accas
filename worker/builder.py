@@ -398,7 +398,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 _o = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
             except Exception:
                 _o = 0
-            if prob < _pfloor or prob * _o < _evfloor:
+            if prob < _pfloor or prob * _o < _evfloor - 0.01:
                 continue
         if any(_same_match(leg, p[0]) for p in picked):
             continue
@@ -496,7 +496,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 _pr = float(prob)
             except Exception:
                 _pr = 0
-            if 2.5 <= _dp <= 7.0 and _pr >= 0.22 and _pr * _dp >= 1.0:
+            if 2.5 <= _dp <= 7.0 and _pr >= 0.22 and _pr * _dp >= 0.99:
                 dream_cands.append((leg, _pr, why, _dp))
         dream_cands.sort(key=lambda t: -(t[1] * t[3]))
         _dpicked, _dcomb = [], 1.0
