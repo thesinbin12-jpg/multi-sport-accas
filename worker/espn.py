@@ -44,6 +44,15 @@ LEAGUES = {
 
 _DAY: dict = {}
 _SESS = None
+_TRACE: list = []
+
+
+def _trace(entry):
+    try:
+        _TRACE.append(entry)
+        del _TRACE[:-5]
+    except Exception:
+        pass
 
 
 def _session():
@@ -120,15 +129,21 @@ def find_score(home, away, league_hint="", ref_date=None, span=2, match_fn=None)
         hn, an = str(home or "").strip().lower(), str(away or "").strip().lower()
         slugs = _slugs_for(league_hint) or ["eng.1", "esp.1", "ger.1", "ita.1", "fra.1",
                                             "usa.nwsl", "usa.mls", "mex.1"]
+        tried = []
         for d in range(-span, 1):
             day = base + _td(days=d)
             for slug in slugs:
-                for h, a, hs, aws in _day_scores(slug, day):
+                evs = _day_scores(slug, day)
+                tried.append("%s:%d" % (slug, len(evs)))
+                for h, a, hs, aws in evs:
                     try:
                         if mf(h.lower(), a.lower(), hn, an):
+                            _trace({"q": "%s vs %s" % (hn, an), "hit": "%s %s-%s" % (slug, hs, aws)})
                             return int(hs), int(aws)
                     except Exception:
                         continue
+        _trace({"q": "%s vs %s" % (hn, an), "miss": ",".join(tried),
+                "hint": str(league_hint or "")[:40]})
     except Exception:
         pass
     return None

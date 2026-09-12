@@ -966,6 +966,17 @@ def _explain_losses(legs: list, max_n: int = 6) -> list:
     return out
 
 
+def _espn_trace() -> list:
+    try:
+        try:
+            from espn import _TRACE
+        except ImportError:
+            from worker.espn import _TRACE  # type: ignore
+        return list(_TRACE or [])[-5:]
+    except Exception:
+        return []
+
+
 def get_priors() -> dict:
     """Empirical model (draw-predictor hybrid idea, no sklearn yet): settled win rates
     by (market), (odds band), (league) with samples. Scout blends these as prior.
@@ -1120,6 +1131,7 @@ def nightly_learn(days_from: int = 5) -> dict:
         "verified": verify_summary,
         "decided_legs": len(legs),
         "accuracy": acc,
+        "espn_trace": _espn_trace(),
         "patterns": patterns,
         "personas": persona.get("table"),
         "weekly": watch,
