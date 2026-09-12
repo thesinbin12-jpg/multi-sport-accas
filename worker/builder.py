@@ -482,8 +482,9 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     }
     tickets = [ticket]
     # Dream slip (daily only): high-odds value legs from the same debated pool.
-    # Targets 10,000x+ (4-8 legs @ 2.5-7.0, prob>=0.3). Tiny fixed stake, joint
-    # probability shown honestly. Never forced: needs >=3 qualifiers.
+    # Targets 10,000x+ (4-8 legs @ 2.5-7.0, prob>=0.22 + EV>=1.0 so pure-implied
+    # longshots still qualify on value). Tiny fixed stake, joint probability
+    # shown honestly. Never forced: needs >=3 qualifiers.
     if kind == "daily":
         dream_cands = []
         for leg, prob, why in assessed:
@@ -495,7 +496,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 _pr = float(prob)
             except Exception:
                 _pr = 0
-            if 2.5 <= _dp <= 7.0 and _pr >= 0.3:
+            if 2.5 <= _dp <= 7.0 and _pr >= 0.22 and _pr * _dp >= 1.0:
                 dream_cands.append((leg, _pr, why, _dp))
         dream_cands.sort(key=lambda t: -(t[1] * t[3]))
         _dpicked, _dcomb = [], 1.0
