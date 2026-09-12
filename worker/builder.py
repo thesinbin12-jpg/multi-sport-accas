@@ -500,17 +500,23 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 dream_cands.append((leg, _pr, why, _dp))
         try:
             if progress_cb:
-                progress_cb(f"Dream: {len(dream_cands)} qualifiers from {len(assessed)} assessed.")
+                progress_cb(f"Dream: {len(dream_cands)} qualifiers, {len(_dpicked)} picked from {len(assessed)} assessed.")
         except Exception:
             pass
         dream_cands.sort(key=lambda t: -(t[1] * t[3]))
         _dpicked, _dcomb = [], 1.0
+        _dfix: dict = {}
         for leg, _pr, why, _dp in dream_cands:
             if len(_dpicked) >= 8:
                 break
-            if any(_same_match(leg, p[0]) for p in _dpicked):
+            try:
+                _fk = (_norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", "")))
+            except Exception:
+                _fk = str(len(_dpicked))
+            if _dfix.get(_fk, 0) >= 2:
                 continue
             _dpicked.append((leg, _pr, why, _dp))
+            _dfix[_fk] = _dfix.get(_fk, 0) + 1
             _dcomb *= max(_dp, 1.01)
             if _dcomb >= 10000 and len(_dpicked) >= 4:
                 break
