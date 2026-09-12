@@ -160,10 +160,28 @@ def _settle_leg(selection: str, hs: int, aws: int) -> bool | None:
 
 
 def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int, leg: dict | None = None):
-    """Return (hs, aws) full-time goals for a match, or None. Odds API first, football-data fallback."""
+    """Return (hs, aws) full-time goals for a match, or None.
+    FotMob first (free, ~185 leagues incl. obscure), Odds API, football-data fallback."""
     if " vs " not in match:
         return None
     home, away = [p.strip().lower() for p in match.split(" vs ", 1)]
+    try:
+        try:
+            from fotmob import find_finished_score
+        except ImportError:
+            from worker.fotmob import find_finished_score  # type: ignore
+        ref = None
+        try:
+            ct = (leg or {}).get("commence_time", "")
+            ref = datetime.fromisoformat(str(ct).replace("Z", "+00:00")).date() if ct else None
+        except Exception:
+            ref = None
+        fm = find_finished_score(home, away, ref_date=ref,
+                                  match_fn=lambda h, a, hn, an: _names_match(h, hn) and _names_match(a, an))
+        if fm:
+            return fm
+    except Exception:
+        pass
     keys = _keys_for_leg(leg or {})
     for sk in keys:
         if sk not in cache:

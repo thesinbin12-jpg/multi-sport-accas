@@ -161,3 +161,68 @@ if __name__ == "__main__":
                 print(f"  {t.get('idx')}. {t.get('name')} — {t.get('points')} pts")
     else:
         print("No EPL data")
+
+
+# ---- live scores (revived 2026-09-12): /api/data/matches?date=YYYYMMDD ----
+import requests as _rq2
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+_FM_UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+          "Chrome/120.0 Mobile Safari/537.36")
+_FM_DAY_CACHE: dict = {}
+
+
+def _fm_day(day):
+    """{(hnorm, anorm): (hs, aws)} finished matches for a date. Cached per process."""
+    key = day.isoformat()
+    if key in _FM_DAY_CACHE:
+        return _FM_DAY_CACHE[key]
+    out = {}
+    try:
+        r = _rq2.get("https://www.fotmob.com/api/data/matches?date=" + day.strftime("%Y%m%d"),
+                     headers={"User-Agent": _FM_UA, "Accept": "application/json"}, timeout=20)
+        if r.status_code == 200:
+            for lg in (r.json().get("leagues") or []):
+                for m in (lg.get("matches") or []):
+                    try:
+                        st = (m.get("status") or {})
+                        if not st.get("finished"):
+                            continue
+                        h = ((m.get("home") or {}).get("longName")
+                             or (m.get("home") or {}).get("name", ""))
+                        a = ((m.get("away") or {}).get("longName")
+                             or (m.get("away") or {}).get("name", ""))
+                        hs, aws = (m.get("home") or {}).get("score"), (m.get("away") or {}).get("score")
+                        if h and a and hs is not None and aws is not None:
+                            out[(str(h).strip().lower(), str(a).strip().lower())] = (int(hs), int(aws))
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    _FM_DAY_CACHE[key] = out
+    return out
+
+
+def find_finished_score(home, away, ref_date=None, span=2, match_fn=None):
+    """(hs, aws) or None. Searches ref_date ± span days. Keyless, ~185 leagues.
+    match_fn(h1, a1, h2, a2) fuzzy-matches names; default handles exact/contains."""
+    def _default(h1, a1, h2, a2):
+        return (h1 == h2 and a1 == a2) or (h1 in h2 and a1 in a2) or (h2 in h1 and a2 in a1)
+    mf = match_fn or _default
+    try:
+        base = ref_date or _dt.now(_tz).date()
+        if isinstance(base, str):
+            base = _dt.fromisoformat(base[:10]).date()
+        hn = str(home or "").strip().lower()
+        an = str(away or "").strip().lower()
+        for d in range(-span, 1):
+            day = base + _td(days=d)
+            for (h, a), score in _fm_day(day).items():
+                try:
+                    if mf(h, a, hn, an):
+                        return score
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return None
