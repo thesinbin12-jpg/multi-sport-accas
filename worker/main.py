@@ -143,6 +143,11 @@ def diag(request: Request, home: str = "", away: str = "", league: str = "", dat
     trace: dict = {"fixture": f"{home} vs {away}", "league": league, "date": date}
     trace["serving"] = os.environ.get("RENDER_GIT_COMMIT", "local")[:9]
     try:
+        import socket as _sk
+        trace["instance"] = _sk.gethostname()
+    except Exception:
+        pass
+    try:
         try:
             import espn as _espn
         except ImportError:
