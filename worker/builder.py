@@ -48,6 +48,24 @@ def _tavily_search(query: str, max_results: int = 3) -> str:
     return ""
 
 
+def _find_outcome(leg: dict, pick: str):
+    """Find outcome by name across ALL markets (not just the first). Returns outcome dict or None."""
+    try:
+        outs = leg.get("outcomes", []) or []
+        if outs:
+            so = next((o for o in outs if str(o.get("name", "")).lower() == pick), None)
+            if so is not None:
+                return so
+        for bm in leg.get("bookmakers", []) or []:
+            for mk in (bm.get("markets", []) or []):
+                for o in (mk.get("outcomes", []) or []):
+                    if str(o.get("name", "")).lower() == pick:
+                        return o
+    except Exception:
+        pass
+    return None
+
+
 def _implied_prob(odds: float) -> float:
     if not odds or odds <= 1.0:
         return 0.0
@@ -428,11 +446,16 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         outcomes = leg.get("outcomes", []) or []
         if not outcomes:
             try:
-                outcomes = ((leg.get("bookmakers") or [{}])[0].get("markets") or [{}])[0].get("outcomes", []) or []
+                outcomes = []
+                for _bm in leg.get("bookmakers", []) or []:
+                    for _mk in (_bm.get("markets", []) or []):
+                        outcomes += (_mk.get("outcomes", []) or [])
             except Exception:
                 outcomes = []
         pick = str(leg.get("_pick") or "").lower()
-        sel_out = next((o for o in outcomes if str(o.get("name", "")).lower() == pick), None) if pick else None
+        sel_out = _find_outcome(leg, pick) if pick else None
+        if sel_out is None and pick:
+            continue  # pick vanished from the book (price moved) — never fabricate
         if sel_out is not None:
             try:
                 oprice = float(sel_out.get("price", 0))
@@ -523,14 +546,8 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         if len(_dpicked) >= 3:
             _dlegs = []
             for leg, _pr, why, _dp in _dpicked:
-                _outs = leg.get("outcomes", []) or []
-                if not _outs:
-                    try:
-                        _outs = ((leg.get("bookmakers") or [{}])[0].get("markets") or [{}])[0].get("outcomes", []) or []
-                    except Exception:
-                        _outs = []
                 _pk = str(leg.get("_pick") or "").lower()
-                _so = next((o for o in _outs if str(o.get("name", "")).lower() == _pk), None) if _pk else None
+                _so = _find_outcome(leg, _pk) if _pk else None
                 if _so is not None:
                     try:
                         _op = float(_so.get("price", 0))
