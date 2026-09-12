@@ -375,6 +375,8 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
             leg["_pick"] = name
             leg["_pick_name"] = orig.get(name, name)
             leg["_coverage"] = coverage
+            # store the LIVE selection price for downstream (ticket builder, dream)
+            leg["_sel_price"] = picks[name.lower()][2]  # (blended, edge, price, why)[2]
             got.append(leg)
         return got
 
