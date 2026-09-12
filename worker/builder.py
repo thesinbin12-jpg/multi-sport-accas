@@ -498,6 +498,11 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 _pr = 0
             if 2.5 <= _dp <= 7.0 and _pr >= 0.22 and _pr * _dp >= 0.99:
                 dream_cands.append((leg, _pr, why, _dp))
+        try:
+            if progress_cb:
+                progress_cb(f"Dream: {len(dream_cands)} qualifiers from {len(assessed)} assessed.")
+        except Exception:
+            pass
         dream_cands.sort(key=lambda t: -(t[1] * t[3]))
         _dpicked, _dcomb = [], 1.0
         for leg, _pr, why, _dp in dream_cands:
