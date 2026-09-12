@@ -480,7 +480,92 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         "kind": kind,
         "stake": stake,
     }
-    return [ticket]
+    tickets = [ticket]
+    # Dream slip (daily only): high-odds value legs from the same debated pool.
+    # Targets 10,000x+ (4-8 legs @ 2.5-7.0, prob>=0.3). Tiny fixed stake, joint
+    # probability shown honestly. Never forced: needs >=3 qualifiers.
+    if kind == "daily":
+        dream_cands = []
+        for leg, prob, why in assessed:
+            try:
+                _dp = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
+            except Exception:
+                _dp = 0
+            try:
+                _pr = float(prob)
+            except Exception:
+                _pr = 0
+            if 2.5 <= _dp <= 7.0 and _pr >= 0.3:
+                dream_cands.append((leg, _pr, why, _dp))
+        dream_cands.sort(key=lambda t: -(t[1] * t[3]))
+        _dpicked, _dcomb = [], 1.0
+        for leg, _pr, why, _dp in dream_cands:
+            if len(_dpicked) >= 8:
+                break
+            if any(_same_match(leg, p[0]) for p in _dpicked):
+                continue
+            _dpicked.append((leg, _pr, why, _dp))
+            _dcomb *= max(_dp, 1.01)
+            if _dcomb >= 10000 and len(_dpicked) >= 4:
+                break
+        if len(_dpicked) >= 3:
+            _dlegs = []
+            for leg, _pr, why, _dp in _dpicked:
+                _outs = leg.get("outcomes", []) or []
+                if not _outs:
+                    try:
+                        _outs = ((leg.get("bookmakers") or [{}])[0].get("markets") or [{}])[0].get("outcomes", []) or []
+                    except Exception:
+                        _outs = []
+                _pk = str(leg.get("_pick") or "").lower()
+                _so = next((o for o in _outs if str(o.get("name", "")).lower() == _pk), None) if _pk else None
+                if _so is not None:
+                    try:
+                        _op = float(_so.get("price", 0))
+                    except Exception:
+                        _op = 0
+                    if 2.5 <= _op <= 7.0:
+                        _sel, _od = _so.get("name"), _op
+                    else:
+                        continue
+                else:
+                    continue
+                _dlegs.append({
+                    "sport": leg.get("sport", leg.get("sport_key", "")),
+                    "sport_key": leg.get("sport_key", ""),
+                    "league": leg.get("league", ""),
+                    "market": leg.get("market", "1X2"),
+                    "match": f"{leg.get('home_team','?')} vs {leg.get('away_team','?')}",
+                    "selection": _sel, "odds": round(_od, 3),
+                    "probability": round(_pr, 4), "result": "pending",
+                    "reason": why, "analysis": leg.get("analysis", ""),
+                    "commence_time": leg.get("commence_time", ""),
+                    "bookmaker": leg.get("best_bookmaker", ""),
+                    "coverage": ("wide" if int(leg.get("_coverage", 1) or 1) > 1 else "single-book"),
+                })
+            if len(_dlegs) >= 3:
+                _dcomb = round(math.prod(max(float(b["odds"]), 1.01) for b in _dlegs), 3)
+                _joint = 1.0
+                for b in _dlegs:
+                    _joint *= max(min(float(b["probability"]), 0.99), 0.01)
+                _now2 = datetime.now(timezone.utc)
+                dream = {
+                    "id": f"acca-dream-{_now2.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
+                    "created_at": _now2.isoformat(),
+                    "combined_odds": _dcomb,
+                    "legs": _dlegs,
+                    "status": "pending",
+                    "kind": kind,
+                    "stake": {"units": 0.5, "confidence": round(_joint, 4),
+                               "note": "Dream slip — tiny stake, huge payout. Joint hit chance shown honestly.",
+                               "llm": False, "tier": "dream", "combined_odds": _dcomb},
+                }
+                try:
+                    stake["tier"] = "value"
+                except Exception:
+                    pass
+                tickets = [dream, ticket]
+    return tickets
 
 
 RANK_SYSTEM = (

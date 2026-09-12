@@ -97,10 +97,15 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
 
         tickets = builder.build_and_save(max_legs=max_legs, use_ai=use_ai,
                                          max_credits=max_credits, progress_cb=progress, kind=kind)
+        try:
+            _main_id = next((t["id"] for t in tickets
+                             if (t.get("stake") or {}).get("tier", "value") != "dream"), None)
+        except Exception:
+            _main_id = None
         with _state_lock:
             BUILD_STATE.update(status="done", finished_at=datetime.now(timezone.utc).isoformat(),
                                tickets_built=len(tickets),
-                               last_ticket_id=tickets[0]["id"] if tickets else None,
+                               last_ticket_id=_main_id or (tickets[0]["id"] if tickets else None),
                                message=(f"built {len(tickets)} ticket(s)" if tickets
                                         else "no legs found — try again later"))
     except Exception as e:
