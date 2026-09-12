@@ -175,6 +175,27 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
     home, away = [p.strip().lower() for p in match.split(" vs ", 1)]
     try:
         try:
+            from espn import find_score as _espn_score
+        except ImportError:
+            from worker.espn import find_score as _espn_score  # type: ignore
+        _lg = (leg or {}).get("league", "")
+        _ct = (leg or {}).get("commence_time", "")
+        try:
+            _ref = datetime.fromisoformat(str(_ct).replace("Z", "+00:00")).date() if _ct else None
+        except Exception:
+            _ref = None
+        _es = _espn_score(home, away, league_hint=_lg, ref_date=_ref,
+                          match_fn=lambda h, a, hn, an: _names_match(h, hn) and _names_match(a, an))
+        if _es:
+            try:
+                (leg or {}).__setitem__("_src", "espn") if isinstance(leg, dict) else None
+            except Exception:
+                pass
+            return _es
+    except Exception:
+        pass
+    try:
+        try:
             from fotmob import find_finished_score
         except ImportError:
             from worker.fotmob import find_finished_score  # type: ignore
