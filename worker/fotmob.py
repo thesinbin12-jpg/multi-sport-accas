@@ -205,7 +205,8 @@ def _fm_day(day):
                         continue
     except Exception:
         pass
-    _FM_DAY_CACHE[key] = out
+    if out:
+        _FM_DAY_CACHE[key] = out
     try:
         import logging as _lg
         _lg.getLogger("acca").info("FotMob %s: %d finished", key, len(out))

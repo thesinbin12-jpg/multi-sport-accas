@@ -6,6 +6,7 @@ some datacenter IPs) and football-data.org (13 comps). Day-cached per process.
 """
 
 import requests as _rq
+import time as _time
 from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/soccer/%s/scoreboard"
@@ -69,6 +70,10 @@ def _day_scores(slug, day):
         else:
             r = _rq.get(BASE % slug, params={"dates": day.strftime("%Y%m%d")},
                         headers={"User-Agent": _UA, "Accept": "application/json"}, timeout=20)
+        if r.status_code == 429:
+            _time.sleep(15)
+            r = (s or _rq).get((BASE % slug), params={"dates": day.strftime("%Y%m%d")},
+                               headers={"User-Agent": _UA, "Accept": "application/json"}, timeout=20)
         if r.status_code == 200:
             for e in (r.json().get("events") or []):
                 try:
@@ -85,7 +90,8 @@ def _day_scores(slug, day):
                     continue
     except Exception:
         pass
-    _DAY[key] = out
+    if out:
+        _DAY[key] = out
     return out
 
 
