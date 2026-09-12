@@ -179,8 +179,14 @@ def _fm_day(day):
         return _FM_DAY_CACHE[key]
     out = {}
     try:
-        r = _rq2.get("https://www.fotmob.com/api/data/matches?date=" + day.strftime("%Y%m%d"),
-                     headers={"User-Agent": _FM_UA, "Accept": "application/json"}, timeout=20)
+        try:
+            from curl_cffi import requests as _cr
+            _sess = _cr.Session(impersonate="chrome120")
+            r = _sess.get("https://www.fotmob.com/api/data/matches?date=" + day.strftime("%Y%m%d"),
+                           headers={"User-Agent": _FM_UA, "Accept": "application/json"}, timeout=20)
+        except ImportError:
+            r = _rq2.get("https://www.fotmob.com/api/data/matches?date=" + day.strftime("%Y%m%d"),
+                         headers={"User-Agent": _FM_UA, "Accept": "application/json"}, timeout=20)
         if r.status_code == 200:
             for lg in (r.json().get("leagues") or []):
                 for m in (lg.get("matches") or []):
@@ -200,6 +206,11 @@ def _fm_day(day):
     except Exception:
         pass
     _FM_DAY_CACHE[key] = out
+    try:
+        import logging as _lg
+        _lg.getLogger("acca").info("FotMob %s: %d finished", key, len(out))
+    except Exception:
+        pass
     return out
 
 

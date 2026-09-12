@@ -939,6 +939,18 @@ def nightly_learn(days_from: int = 5) -> dict:
     patterns = analyze(legs)
     persona = _score_personas(legs)
     prev = _last_debrief()
+    # No-new-evidence guard: with zero verified and zero decided legs the LLM
+    # invents specifics (seen live). Skip the reason call, keep a factual row.
+    if (verify_summary.get("checked") or 0) == 0 and not legs:
+        pend = verify_summary.get("pending", 0)
+        notes = (f"run {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}: no matches settled "
+                 f"({pend} ticket(s) still pending). Nothing to learn yet — strategy unchanged.")
+        summary = {"verified": verify_summary, "decided_legs": 0,
+                   "accuracy": db.get_accuracy_stats(), "patterns": patterns,
+                   "personas": persona.get("table"), "weekly": weekly_watch(),
+                   "lost_stories": [], "decision": {"notes": notes}}
+        _save_debrief(0, summary, notes)
+        return {"ok": True, "notes": notes, "summary": summary}
     decision = reason(patterns, legs, (prev or {}).get("notes", ""), persona)
     _save_patterns(patterns, decision)
     watch = weekly_watch()
