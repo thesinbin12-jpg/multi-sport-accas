@@ -5,7 +5,7 @@ export default async function handler(req, res) {
   try {
     let url;
     if (req.query.diag) {
-      const q = `home=${encodeURIComponent(req.query.home || '')}&away=${encodeURIComponent(req.query.away || '')}&league=${encodeURIComponent(req.query.league || '')}&date=${encodeURIComponent(req.query.date || '')}`;
+      const q = `home=${encodeURIComponent(req.query.home || '')}&away=${encodeURIComponent(req.query.away || '')}&league=${encodeURIComponent(req.query.league || '')}&date=${encodeURIComponent(req.query.date || '')}&ticket=${encodeURIComponent(req.query.ticket || '')}`;
       url = `${base}/diag?${q}`;
     } else {
       url = `${base}/logs?tail=${encodeURIComponent(req.query.tail || '200')}`;
