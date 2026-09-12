@@ -181,6 +181,11 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
         fm = find_finished_score(home, away, ref_date=ref,
                                   match_fn=lambda h, a, hn, an: _names_match(_strip(h), hn) and _names_match(_strip(a), an))
         if fm:
+            try:
+                import logging as _lg
+                _lg.getLogger("acca").info("settle %s via FotMob %s", match[:60], fm)
+            except Exception:
+                pass
             return fm
     except Exception:
         pass
