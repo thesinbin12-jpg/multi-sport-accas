@@ -48,6 +48,39 @@ def _tavily_search(query: str, max_results: int = 3) -> str:
     return ""
 
 
+def _all_outcomes(leg: dict) -> list:
+    """Every outcome dict across leg['outcomes'] + all nested bookmaker markets."""
+    seen, out = set(), []
+    try:
+        for o in (leg.get("outcomes", []) or []):
+            _k = (str(o.get("name", "")).lower(), str(o.get("price", "")))
+            if _k not in seen:
+                seen.add(_k)
+                out.append(o)
+        for bm in leg.get("bookmakers", []) or []:
+            for mk in (bm.get("markets", []) or []):
+                for o in (mk.get("outcomes", []) or []):
+                    _k = (str(o.get("name", "")).lower(), str(o.get("price", "")))
+                    if _k not in seen:
+                        seen.add(_k)
+                        out.append(o)
+    except Exception:
+        pass
+    return out
+
+
+def _closest_outcome(leg: dict, price: float):
+    """Outcome whose price is nearest `price` (reconstructs selection when _pick missing)."""
+    try:
+        cands = [(o, abs(float(o.get("price", 0)) - price)) for o in _all_outcomes(leg)]
+        cands = [(o, d) for o, d in cands if o.get("price")]
+        if not cands:
+            return None
+        return min(cands, key=lambda t: t[1])[0]
+    except Exception:
+        return None
+
+
 def _find_outcome(leg: dict, pick: str):
     """Find outcome by name across ALL markets (not just the first). Returns outcome dict or None."""
     try:
@@ -548,6 +581,8 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             for leg, _pr, why, _dp in _dpicked:
                 _pk = str(leg.get("_pick") or "").lower()
                 _so = _find_outcome(leg, _pk) if _pk else None
+                if _so is None:
+                    _so = _closest_outcome(leg, _dp)
                 if _so is not None:
                     try:
                         _op = float(_so.get("price", 0))
