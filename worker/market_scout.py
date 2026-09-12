@@ -138,7 +138,7 @@ def _blend(data_p, implied, sample):
     return round(data_p * w + implied * (1 - w), 4), w
 
 
-def score_fixture(home, away, markets, progress_cb=None, skip_history=False):
+def score_fixture(home, away, markets, progress_cb=None, skip_history=False, league=""):
     """markets: {label: [(name, price)]}. Returns [(label, name, price, blended, edge, data_why)].
     skip_history=True: fast odds-only pass (implied + priors + popular + coverage),
     no FDO spend — every fixture gets ranked, only finalists cost history."""
@@ -240,10 +240,20 @@ def score_fixture(home, away, markets, progress_cb=None, skip_history=False):
             blended, w = _blend(data_p, imp, sample)
             prior_txt = ""
             try:
-                mp = (_PRIORS.get("market") or {}).get(label)
-                if mp is not None:
-                    blended = round(blended * 0.85 + float(mp) * 0.15, 4)
-                    prior_txt = f"; settled-{label} prior {float(mp):.2f}"
+                _mp = (_PRIORS.get("market") or {}).get(label)
+                _band = "1.4-2.0" if price < 2.0 else ("2.0-3.0" if price < 3.0 else ("3.0-5.0" if price < 5.0 else "5.0+"))
+                _bp = (_PRIORS.get("band") or {}).get(_band)
+                _lp = (_PRIORS.get("league") or {}).get(_league_name)
+                _parts = []
+                _pw, _pv = 0.0, 0.0
+                for _key, _pv0 in (("mkt", _mp), ("band", _bp), ("lg", _lp)):
+                    if _pv0 is not None:
+                        _parts.append("%s %s" % (_key, round(float(_pv0), 2)))
+                        _pw += 0.07
+                        _pv += float(_pv0) * 0.07
+                if _parts:
+                    blended = round(blended * (1 - _pw) + _pv, 4)
+                    prior_txt = "; settled[" + ",".join(_parts) + "]"
             except Exception:
                 pass
             if w == 0 and not prior_txt:
@@ -314,7 +324,8 @@ def scout(legs, fdo_budget=24, keep=60, progress_cb=None, hours_ahead=48):
         for leg in fl:
             markets.setdefault(leg.get("market", "1X2"), []).extend(_leg_outcomes(leg))
         try:
-            res = score_fixture(home, away, markets, skip_history=fast)
+            res = score_fixture(home, away, markets, skip_history=fast,
+                                league=str(fl[0].get("league", "") or ""))
         except Exception:
             return []
         res_by_market = {}

@@ -966,6 +966,28 @@ def _explain_losses(legs: list, max_n: int = 6) -> list:
     return out
 
 
+def recent_loss_notes(league: str = "", n: int = 3) -> list:
+    """Latest post-mortems (lost_why) overall + for this league. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT match, selection, lost_why FROM acca_legs WHERE result='lost' "
+                       "AND lost_why<>'' ORDER BY id DESC LIMIT %s" % int(n * 4))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        lg = str(league or "").lower()
+        same, other = [], []
+        for match, sel, why in rows:
+            (same if lg and lg in str(match or "").lower() else other).append(
+                {"match": match, "selection": sel, "why": why})
+        return (same + other)[:max(1, n)]
+    except Exception:
+        return []
+
+
 def _espn_trace() -> list:
     try:
         try:

@@ -386,6 +386,77 @@ def get_news(home, away, league="", timeout=20):
     return ""
 
 
+def _learner_context(league=""):
+    """Evening-learner feedback for the morning analyst: strategy, lessons,
+    persona trust, painful post-mortems. Read live each build (cheap DB reads)."""
+    try:
+        try:
+            from learner import get_strategy, recent_loss_notes, _last_debrief
+        except ImportError:
+            from worker.learner import get_strategy, recent_loss_notes, _last_debrief  # type: ignore
+        strat = get_strategy() or {}
+        notes = recent_loss_notes(league, 2) if league else []
+        prev = _last_debrief() or {}
+        lessons = []
+        try:
+            lessons = ((prev.get("summary") or {}).get("decision") or {}).get("lessons") or []
+        except Exception:
+            pass
+        bits = []
+        if strat.get("blocked_leagues"):
+            bits.append("AVOID leagues: " + ", ".join(str(x)[:40] for x in strat["blocked_leagues"][:6]))
+        if strat.get("preferred_band"):
+            bits.append("prefer odds band " + str(strat["preferred_band"]))
+        pw = strat.get("persona_weights") or {}
+        if pw:
+            bits.append("persona trust: " + ", ".join("%s=%s" % (k, v) for k, v in list(pw.items())[:9]))
+        if lessons:
+            bits.append("lessons: " + " | ".join(str(x)[:140] for x in lessons[:3]))
+        for ln in notes:
+            bits.append("PAINFUL LESSON (%s %s): %s" % (ln.get("match"), ln.get("selection"), str(ln.get("why"))[:160]))
+        return ("Learner feedback: " + " | ".join(bits))[:1200] if bits else ""
+    except Exception:
+        return ""
+
+
+def _sim_line(home, away, selection, market, odds):
+    try:
+        try:
+            from market_scout import _with_me, _team_stats, _h2h
+        except ImportError:
+            from worker.market_scout import _with_me, _team_stats, _h2h  # type: ignore
+        try:
+            from simulator import simulate, describe
+        except ImportError:
+            from worker.simulator import simulate, describe  # type: ignore
+        hs = _with_me(team_recent_struct(home), home)
+        aws = _with_me(team_recent_struct(away), away)
+        hst, ast = _team_stats(hs), _team_stats(aws)
+        sample = hst["gp"] + ast["gp"]
+        if sample >= 2:
+            exp_h = max(0.15, ((hst["gf_avg"] + ast["ga_avg"]) / 2) * 1.15)
+            exp_a = max(0.10, ((ast["gf_avg"] + hst["ga_avg"]) / 2) * 0.95)
+        else:
+            exp_h, exp_a = 1.35, 1.15
+        p_btts = (hst["scored_frac"] * ast["scored_frac"]) if sample else 0.5
+        meetings = _h2h(hs, aws, home, away)
+        tilt = 0.0
+        if meetings:
+            hw = sum(1 for m in meetings if m["hs"] > m["aws"])
+            aw = sum(1 for m in meetings if m["aws"] > m["hs"])
+            tilt = max(-1.0, min(1.0, (hw - aw) / max(1, len(meetings))))
+        try:
+            imp = 1.0 / float(odds) if float(odds) > 1 else 0.5
+        except Exception:
+            imp = 0.5
+        sim = simulate(exp_h, exp_a, p_btts, n=2000, seed=abs(hash(home + away)) % 100000,
+                       h2h_tilt=tilt, market_mix=0.2,
+                       mkt_h=imp, mkt_d=min(0.35, imp * 0.6), mkt_a=max(0.05, 1 - imp - min(0.35, imp * 0.6)))
+        return describe(sim, selection, market, home, away)
+    except Exception:
+        return ""
+
+
 def _persona_weights() -> dict:
     """Historical reliability from the evening learner (1.0 = average). Never raises."""
     try:
@@ -623,6 +694,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
     _msg(f"Analyst: {home} vs {away} ({selection}) — gathering history + news…")
     history = get_history(home, away, league, struct=history_struct)
     news = get_news(home, away, league)
+    sim_text = _sim_line(home, away, selection, market, odds)
     if not history:
         history = "No recent-form data available (coverage gap)."
     if not news:
@@ -631,6 +703,8 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
     brief = (f"Match: {home} vs {away}\nLeague: {league}\nMarket: {market}\n"
              f"Selection: {selection} @ {odds} (implied {base})\n"
              f"Data scout (pure-code models, no LLM): {(leg.get('_data') or (0, 0, ''))[2] if isinstance(leg.get('_data'), tuple) else ''}\n"
+             f"{sim_text}\n"
+             f"{_learner_context(league)}\n"
              f"History: {history[:900]}\nNews: {news[:1200]}")
 
     verdicts = []
@@ -651,6 +725,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
     _msg(f"Analyst: {home} vs {away} — synthesizing {len(verdicts)} verdicts…")
     synth = _ask(f"Selection: {selection} @ {odds}. Statistical base probability: {base}.\n"
                   f"{wline}"
+                  f"{sim_text}\n"
                   f"Specialist verdicts: {scored}\nHistory: {history[:600]}\nNews: {news[:800]}",
                   system=SYNTH_SYSTEM,
                   max_chars=1500, tries=3, gated=False, stage="synth", prefer="nim")
