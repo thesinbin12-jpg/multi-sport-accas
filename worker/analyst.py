@@ -497,7 +497,9 @@ def _rpm_wait(pref):
 
 def _rotation(exclude=None):
     """Providers keyed (None = full chain). NVIDIA NIM primary (40 RPM, tested).
-    Groq workhorse next; OpenRouter precious (50/day): overflow + synth prefer."""
+    Groq workhorse next; OpenRouter precious (50/day): overflow + synth prefer.
+    JUDGE_PROVIDER (default gemini) is reserved for the stake judge: the swarm
+    never touches it, so the judge always has a fresh, unthrottled lane."""
     try:
         avail = []
         if _router.has_provider("nim"):
@@ -509,6 +511,11 @@ def _rotation(exclude=None):
             from worker.learner import or_left  # type: ignore
         if _router.has_provider("orouter") and or_left() > 0:
             avail = avail + ["orouter"]
+        if exclude is None:
+            try:
+                exclude = os.environ.get("JUDGE_PROVIDER", "gemini")
+            except Exception:
+                exclude = "gemini"
         if exclude and len(avail) > 1:
             avail = [p for p in avail if p != exclude] or avail
         return avail or [None]

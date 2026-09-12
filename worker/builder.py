@@ -524,7 +524,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         return []
 
     # Agentic final pass: LLM ranks legs, sets stake + confidence (tools ground it)
-    stake = _agentic_stake(built, kind, use_ai)
+    stake = _agentic_stake(built, kind, use_ai, progress_cb=progress_cb)
 
     combined = round(math.prod(max(float(b["odds"]), 1.01) for b in built), 3)
     ticket = {
@@ -671,7 +671,7 @@ def _heuristic_stake(built: list, kind: str, why: str = "") -> dict:
             "note": f"Tier {tier}. Heuristic sizing (LLM unavailable) — small either way.", "llm": False}
 
 
-def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
+def _agentic_stake(built: list, kind: str, use_ai: bool, progress_cb=None) -> dict:
     if not use_ai:
         return _heuristic_stake(built, kind)
     try:
@@ -681,17 +681,57 @@ def _agentic_stake(built: list, kind: str, use_ai: bool) -> dict:
         combined = round(_m.prod(max(float(b["odds"]), 1.01) for b in built), 2)
         prompt = RANK_PROMPT.format(kind=kind, tier="A" if kind == "weekly" else "B",
                                     legs="\n".join(lines)[:3000], combined=combined)
+        import time as _tm
+        try:
+            _jp = os.environ.get("JUDGE_PROVIDER", "gemini")
+        except Exception:
+            _jp = "gemini"
+        # cooldown: the swarm just burst ~100 calls; let buckets refill before the
+        # single most-exposed call. Judge lane (JUDGE_PROVIDER) is swarm-reserved.
+        try:
+            if progress_cb:
+                progress_cb("Judge: cooling down 10s, then calling reserved lane…")
+        except Exception:
+            pass
+        _tm.sleep(10)
         out = None
-        for _try in range(2):
-            # freshest fast lane first (NIM), then the full chain
-            _pref = "nim" if _try == 0 else None
+        for _try, _pref in enumerate([_jp, _jp, "nim", None]):
+            if _try:
+                _tm.sleep((0, 15, 20, 30)[_try] if _try < 4 else 30)
+            # honest budget gates: judge spends from its lane's quota
+            try:
+                try:
+                    from learner import llm_left, log_llm, or_left, log_or
+                except ImportError:
+                    from worker.learner import llm_left, log_llm, or_left, log_or  # type: ignore
+                if _pref == "orouter":
+                    if or_left() <= 0:
+                        continue
+                    log_or()
+                elif _pref == "gemini":
+                    try:
+                        from learner import gm_left, log_gm
+                    except ImportError:
+                        from worker.learner import gm_left, log_gm  # type: ignore
+                    if gm_left() <= 0:
+                        continue
+                    log_gm()
+                else:
+                    if llm_left() <= 0:
+                        continue
+                    log_llm()
+            except Exception:
+                pass
             out = router.analyze(prompt, system_prompt=RANK_SYSTEM, model_pref=_pref)
             _t = out[0] if isinstance(out, tuple) else None
             _e = out[2] if isinstance(out, tuple) and len(out) > 2 else None
             if _t and not _e:
                 break
-            import time as _tm
-            _tm.sleep(3)
+            try:
+                if progress_cb:
+                    progress_cb(f"Judge: lane {_pref or 'chain'} busy, retrying…")
+            except Exception:
+                pass
         text = out[0] if isinstance(out, tuple) else None
         err = out[2] if isinstance(out, tuple) and len(out) > 2 else None
         if err or not text:
