@@ -174,6 +174,19 @@ def diag(request: Request, home: str = "", away: str = "", league: str = "", dat
         trace["fotmob_day_size"] = len(_fm_day(base))
     except Exception as e:
         trace["fotmob_error"] = str(e)[:200]
+    try:
+        try:
+            import verifier as _ver
+        except ImportError:
+            from worker import verifier as _ver  # type: ignore
+        from scanner import OddsScanner as _OS
+        _leg = {"match": f"{home} vs {away}", "league": league,
+                "commence_time": date + "T00:00:00Z" if date else "",
+                "selection": "x", "result": "pending"}
+        _sc = _ver._resolve_score(f"{home} vs {away}", _OS(), {}, 5, _leg)
+        trace["verify_resolve"] = {"score": _sc, "src": _leg.get("_src")}
+    except Exception as e:
+        trace["verify_error"] = str(e)[:300]
     return {"ok": True, "trace": trace}
 
 
