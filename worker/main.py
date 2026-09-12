@@ -167,6 +167,16 @@ def diag(request: Request, home: str = "", away: str = "", league: str = "", dat
     except Exception as e:
         trace["espn_error"] = str(e)[:200]
     try:
+        tid = request.query_params.get("ticket", "")
+        if tid:
+            try:
+                import verifier as _ver2
+            except ImportError:
+                from worker import verifier as _ver2  # type: ignore
+            trace["ticket_verify"] = _ver2.verify_ticket_with_selection(tid, days_from=5)
+    except Exception as e:
+        trace["ticket_error"] = str(e)[:300]
+    try:
         try:
             from fotmob import _fm_day
         except ImportError:
