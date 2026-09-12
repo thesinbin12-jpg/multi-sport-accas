@@ -17,7 +17,7 @@ Tables (created here, alongside db.py tables):
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 try:
     import db
@@ -137,6 +137,17 @@ def init_learner_schema() -> None:
             PRIMARY KEY (day, provider, model)
         )
         """
+        srcstat = """
+        CREATE TABLE IF NOT EXISTS acca_source_stats (
+            source TEXT PRIMARY KEY,
+            ok INTEGER NOT NULL DEFAULT 0,
+            fail INTEGER NOT NULL DEFAULT 0,
+            last_ok TEXT DEFAULT '',
+            last_err TEXT DEFAULT '',
+            avg_ms INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
@@ -148,6 +159,7 @@ def init_learner_schema() -> None:
         cur.execute(formcache)
         cur.execute(llmerr)
         cur.execute(llmmodels)
+        cur.execute(srcstat)
         conn.commit()
     finally:
         conn.close()
@@ -516,6 +528,67 @@ def model_split(limit: int = 15) -> list:
         return [{"provider": r[0], "model": r[1], "n": r[2]} for r in rows]
     except Exception:
         return []
+
+
+def source_record(source: str, ok: bool, ms: int = 0, err: str = "") -> None:
+    """Log one fetch outcome for adaptive source ordering. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT ok, fail, avg_ms FROM acca_source_stats WHERE source=%s", (source,))
+            row = cur.fetchone()
+            if row:
+                n_ok = row[0] + (1 if ok else 0)
+                n_fail = row[1] + (0 if ok else 1)
+                avg = int(((row[2] or 0) + max(0, ms)) / 2) if ms else (row[2] or 0)
+                if ok:
+                    _exec(cur, "UPDATE acca_source_stats SET ok=%s, fail=%s, avg_ms=%s, last_ok=%s, updated_at=%s WHERE source=%s",
+                          (n_ok, n_fail, avg, _now(), _now(), source))
+                else:
+                    _exec(cur, "UPDATE acca_source_stats SET ok=%s, fail=%s, avg_ms=%s, last_err=%s, updated_at=%s WHERE source=%s",
+                          (n_ok, n_fail, avg, str(err)[:200], _now(), source))
+            else:
+                _exec(cur, "INSERT INTO acca_source_stats (source, ok, fail, last_ok, last_err, avg_ms, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                      (source, 1 if ok else 0, 0 if ok else 1, _now() if ok else "", "" if ok else str(err)[:200], max(0, ms), _now()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def source_health() -> list:
+    """[{source, rate, ok, fail, last_err}] worst-first. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT source, ok, fail, last_err FROM acca_source_stats")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        out = []
+        for s, ok, fail, err in rows:
+            tot = (ok or 0) + (fail or 0)
+            out.append({"source": s, "rate": round((ok or 0) / tot, 2) if tot else None,
+                        "ok": ok, "fail": fail, "last_err": err})
+        return sorted(out, key=lambda r: (r["rate"] is None, r["rate"] or 0))
+    except Exception:
+        return []
+
+
+def source_usable(name: str, min_rate: float = 0.15, min_n: int = 3) -> bool:
+    """False when a source keeps failing (skip it, save time). Unknown/new = usable."""
+    try:
+        for r in source_health():
+            if r["source"] == name and (r["ok"] + r["fail"]) >= min_n and (r["rate"] or 0) < min_rate:
+                return False
+    except Exception:
+        pass
+    return True
 
 
 def log_llm(n: int = 1) -> None:
@@ -919,6 +992,72 @@ def get_priors() -> dict:
         return {"market": {}, "band": {}, "league": {}}
 
 
+def probe_sources() -> dict:
+    """Nightly self-audit: 1 cheap call per data source, record health.
+    The system watches its own senses and routes around dead ones."""
+    out = {}
+    # odds: Betika list page
+    try:
+        import time as _t
+        _t0 = _t.time()
+        import requests as _rq
+        r = _rq.get("https://api.betika.com/v1/matches",
+                    params={"sport_id": 14, "sub_type_id": "1", "page": 1, "limit": 1},
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
+        ok = r.status_code == 200 and bool((r.json().get("data") or []))
+        source_record("odds-betika", ok, int((_t.time() - _t0) * 1000), "" if ok else str(r.status_code))
+        out["odds-betika"] = ok
+    except Exception as e:
+        source_record("odds-betika", False, 0, str(e)[:120])
+        out["odds-betika"] = False
+    # scores: ESPN one league-day
+    try:
+        import time as _t
+        _t0 = _t.time()
+        try:
+            from espn import _day_scores
+        except ImportError:
+            from worker.espn import _day_scores  # type: ignore
+        evs = _day_scores("eng.1", datetime.now(timezone.utc).date() - timedelta(days=1))
+        ok = isinstance(evs, list)
+        source_record("scores-espn", True, int((_t.time() - _t0) * 1000))
+        out["scores-espn"] = ok
+    except Exception as e:
+        source_record("scores-espn", False, 0, str(e)[:120])
+        out["scores-espn"] = False
+    # scores: FotMob one day
+    try:
+        import time as _t
+        _t0 = _t.time()
+        try:
+            from fotmob import _fm_day
+        except ImportError:
+            from worker.fotmob import _fm_day  # type: ignore
+        d = _fm_day(datetime.now(timezone.utc).date() - timedelta(days=1))
+        ok = len(d) > 50
+        source_record("scores-fotmob", ok, int((_t.time() - _t0) * 1000), "" if ok else "empty")
+        out["scores-fotmob"] = ok
+    except Exception as e:
+        source_record("scores-fotmob", False, 0, str(e)[:120])
+        out["scores-fotmob"] = False
+    # web: Brave one query
+    try:
+        import time as _t
+        _t0 = _t.time()
+        try:
+            from websearch import brave_search
+        except ImportError:
+            from worker.websearch import brave_search  # type: ignore
+        res = brave_search("test", max_results=1)
+        ok = isinstance(res, list)
+        source_record("web-brave", True, int((_t.time() - _t0) * 1000))
+        out["web-brave"] = ok
+    except Exception as e:
+        source_record("web-brave", False, 0, str(e)[:120])
+        out["web-brave"] = False
+    return out
+
+
 # ---- public API ----
 
 def nightly_learn(days_from: int = 5) -> dict:
@@ -985,6 +1124,7 @@ def nightly_learn(days_from: int = 5) -> dict:
         "personas": persona.get("table"),
         "weekly": watch,
         "lost_stories": lost_stories,
+        "sources": {"health": source_health(), "probe": probe_sources()},
         "decision": {k: v for k, v in decision.items()},
     }
     _save_debrief(verify_summary.get("checked", 0), summary, notes)

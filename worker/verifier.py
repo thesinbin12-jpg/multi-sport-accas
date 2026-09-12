@@ -175,57 +175,69 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
     home, away = [p.strip().lower() for p in match.split(" vs ", 1)]
     try:
         try:
-            from espn import find_score as _espn_score
+            from learner import source_usable
         except ImportError:
-            from worker.espn import find_score as _espn_score  # type: ignore
-        _lg = (leg or {}).get("league", "")
-        _ct = (leg or {}).get("commence_time", "")
-        try:
-            _ref = datetime.fromisoformat(str(_ct).replace("Z", "+00:00")).date() if _ct else None
-        except Exception:
-            _ref = None
-        _es = _espn_score(home, away, league_hint=_lg, ref_date=_ref,
-                          match_fn=lambda h, a, hn, an: _names_match(h, hn) and _names_match(a, an))
-        if _es:
-            try:
-                (leg or {}).__setitem__("_src", "espn") if isinstance(leg, dict) else None
-            except Exception:
-                pass
-            return _es
+            from worker.learner import source_usable  # type: ignore
+        _use_espn, _use_fm = source_usable("scores-espn"), source_usable("scores-fotmob")
     except Exception:
-        pass
-    try:
+        _use_espn, _use_fm = True, True
+    if _use_espn:
         try:
-            from fotmob import find_finished_score
-        except ImportError:
-            from worker.fotmob import find_finished_score  # type: ignore
-        ref = None
-        try:
-            ct = (leg or {}).get("commence_time", "")
-            ref = datetime.fromisoformat(str(ct).replace("Z", "+00:00")).date() if ct else None
-        except Exception:
-            ref = None
-        import re as _re3
-        _strip = lambda s: _re3.sub(r"\s*\([^)]*\)", "", str(s or "")).strip()
-        fm = find_finished_score(home, away, ref_date=ref,
-                                  match_fn=lambda h, a, hn, an: _names_match(_strip(h), hn) and _names_match(_strip(a), an))
-        if fm:
             try:
-                import logging as _lg
-                _lg.getLogger("acca").info("settle %s via FotMob %s", match[:60], fm)
-            except Exception:
-                pass
+                from espn import find_score as _espn_score
+            except ImportError:
+                from worker.espn import find_score as _espn_score  # type: ignore
+            _lg = (leg or {}).get("league", "")
+            _ct = (leg or {}).get("commence_time", "")
             try:
-                (leg or {}).__setitem__("_src", "fotmob") if isinstance(leg, dict) else None
+                _ref = datetime.fromisoformat(str(_ct).replace("Z", "+00:00")).date() if _ct else None
             except Exception:
-                pass
-            return fm
-    except Exception as e:
-        try:
-            import logging as _lg2
-            _lg2.getLogger("acca").warning("fotmob skip %s: %s", match[:50], str(e)[:120])
+                _ref = None
+            _es = _espn_score(home, away, league_hint=_lg, ref_date=_ref,
+                              match_fn=lambda h, a, hn, an: _names_match(h, hn) and _names_match(a, an))
+            if _es:
+                try:
+                    if isinstance(leg, dict):
+                        leg["_src"] = "espn"
+                except Exception:
+                    pass
+                return _es
         except Exception:
             pass
+    if _use_fm:
+        try:
+            try:
+                from fotmob import find_finished_score
+            except ImportError:
+                from worker.fotmob import find_finished_score  # type: ignore
+            ref = None
+            try:
+                ct = (leg or {}).get("commence_time", "")
+                ref = datetime.fromisoformat(str(ct).replace("Z", "+00:00")).date() if ct else None
+            except Exception:
+                ref = None
+            import re as _re3
+            _strip = lambda s: _re3.sub(r"\s*\([^)]*\)", "", str(s or "")).strip()
+            fm = find_finished_score(home, away, ref_date=ref,
+                                      match_fn=lambda h, a, hn, an: _names_match(_strip(h), hn) and _names_match(_strip(a), an))
+            if fm:
+                try:
+                    import logging as _lg
+                    _lg.getLogger("acca").info("settle %s via FotMob %s", match[:60], fm)
+                except Exception:
+                    pass
+                try:
+                    if isinstance(leg, dict):
+                        leg["_src"] = "fotmob"
+                except Exception:
+                    pass
+                return fm
+        except Exception as e:
+            try:
+                import logging as _lg2
+                _lg2.getLogger("acca").warning("fotmob skip %s: %s", match[:50], str(e)[:120])
+            except Exception:
+                pass
     keys = _keys_for_leg(leg or {})
     for sk in keys:
         if sk not in cache:
@@ -275,6 +287,33 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                         return hs, aws
             except Exception:
                 continue
+    # Last resort: web search (free backends only, capped per run).
+    try:
+        _wn = cache.get("_web_n", 0)
+        if _wn < 6:
+            cache["_web_n"] = _wn + 1
+            try:
+                from websearch import search as _wsearch, settle_parse as _sparse
+            except ImportError:
+                _wsearch, _sparse = None, None
+            if _wsearch is None:
+                try:
+                    from worker.websearch import search as _wsearch, settle_parse as _sparse  # type: ignore
+                except ImportError:
+                    _wsearch, _sparse = None, None
+            if _wsearch is not None and _sparse is not None:
+                _res = _wsearch(f"{home} vs {away} full time result score", max_results=4)
+                _texts = [str(x.get("title", "")) + " " + str(x.get("snippet", "")) for x in _res]
+                _ws = _sparse(_texts, home, away)
+                if _ws:
+                    try:
+                        if isinstance(leg, dict):
+                            leg["_src"] = "web"
+                    except Exception:
+                        pass
+                    return _ws
+    except Exception:
+        pass
     return None
 
 
@@ -292,6 +331,14 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
         if score is None:
             unresolved.append(leg.get("match", "?"))
             continue
+        try:
+            try:
+                from learner import source_record as _srec
+            except ImportError:
+                from worker.learner import source_record as _srec  # type: ignore
+            _srec("scores-" + str(leg.get("_src", "unknown")), True)
+        except Exception:
+            pass
         sources[leg.get("_src", "unknown")] = sources.get(leg.get("_src", "unknown"), 0) + 1
         hs, aws = score
         sel = str(leg.get("selection", ""))
