@@ -248,6 +248,7 @@ def get_tickets(limit: int = 20, kind: str | None = None) -> list:
                     out.append({"id": r["id"], "created_at": r["created_at"],
                                 "combined_odds": float(r["combined_odds"]), "legs": legs, "status": r["status"],
                                 "kind": r.get("kind") or "daily", "stake": stake})
+                _hydrate_leg_results(conn, out, _pg=True)
                 return out
             finally:
                 conn.close()
@@ -269,7 +270,45 @@ def get_tickets(limit: int = 20, kind: str | None = None) -> list:
                 out.append({"id": r["id"], "created_at": r["created_at"],
                             "combined_odds": float(r["combined_odds"]), "legs": legs, "status": r["status"],
                             "kind": (r["kind"] if "kind" in cols else None) or "daily", "stake": stake})
+            _hydrate_leg_results(conn, out, _pg=False)
             return out
+
+
+def _hydrate_leg_results(conn, tickets: list, _pg: bool = False) -> None:
+    """Overlay live acca_legs results onto the frozen legs JSON snapshot so
+    /accas (and the frontend) shows Won/Lost per leg as the verifier works.
+    Never raises."""
+    try:
+        ids = [t.get("id") for t in tickets if t.get("id")]
+        if not ids:
+            return
+        ph = "%s" if _pg else "?"
+        q = f"SELECT ticket_id, match, result FROM acca_legs WHERE ticket_id IN ({','.join(ph for _ in ids)})"
+        if _pg:
+            import psycopg2.extras  # type: ignore
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(q, tuple(ids))
+            rows = [dict(r) for r in cur.fetchall()]
+        else:
+            cur = conn.cursor()
+            cur.execute(q.replace("%s", "?"), tuple(ids))
+            rows = [dict(r) for r in cur.fetchall()]
+        live: dict = {}
+        for r in rows:
+            try:
+                live[(r.get("ticket_id"), str(r.get("match", "")))] = r.get("result") or "pending"
+            except Exception:
+                continue
+        for t in tickets:
+            try:
+                for leg in (t.get("legs") or []):
+                    lr = live.get((t.get("id"), str(leg.get("match", ""))))
+                    if lr and lr != "pending":
+                        leg["result"] = lr
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def count_tickets() -> int:
