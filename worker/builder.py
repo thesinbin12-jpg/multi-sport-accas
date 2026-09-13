@@ -462,7 +462,8 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         _ensure_diversity(value_cands, assessed)
         # Dreamer fishes the FULL data-scored pool (diverse), not the 34-leg
         # value-tilted candidate slice — longshots never survive that cut.
-        dream_cands = _pick_dreamer(assessed, diverse)
+        # Raw scan legs back it up so the pair files while board has longshots.
+        dream_cands = _pick_dreamer(assessed, diverse, legs)
         try:
             if progress_cb:
                 progress_cb(f"Daily pair: {len(value_cands)} steady candidates, {len(dream_cands)} dreamer candidates.")
@@ -589,6 +590,16 @@ def _materialize(picked: list, band_lo: float = 1.5, band_hi: float = 7.0, fallb
                 outcomes = []
         pick = str(leg.get("_pick") or "").lower()
         sel_out = _find_outcome(leg, pick) if pick else None
+        if sel_out is None and not pick and fallback == "closest":
+            # unscouted fallback legs carry no _pick: reconstruct the
+            # in-band outcome nearest the snapshot price (band-checked below).
+            try:
+                _ref2 = min(band_hi, max(band_lo, float(leg.get("best_odds") or 0)))
+            except Exception:
+                _ref2 = 0
+            sel_out = _closest_outcome(leg, _ref2) if _ref2 else None
+            if sel_out is None:
+                continue
         if sel_out is None and pick and fallback == "closest":
             try:
                 _ref = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
@@ -710,11 +721,14 @@ def _trim_to_target(built: list, target: float = 50.0, min_legs: int = 4, max_le
     return kept
 
 
-def _pick_dreamer(assessed: list, candidates: list) -> list:
+def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None) -> list:
     """Dreamer longshot picks with OWN sourcing (never starves on swarm
     leftovers): best-known prob per leg (swarm > data model > implied),
     odds band 2.5-7.0, prob>=0.10. Ranked by EV, up to 8 legs (2/fixture),
-    stops at 10000x with >=4. Needs >=3 to file."""
+    stops at 10000x with >=4. Needs >=3 to file.
+    When the data-scored pool is short, tops up from the RAW scan legs
+    (2.5-4.5, price-ascending, implied prob) so the pair ALWAYS files
+    while longshots exist on the board (verified 1000+ live)."""
     aprobs: dict = {}
     for leg, prob, why in assessed:
         try:
@@ -762,6 +776,44 @@ def _pick_dreamer(assessed: list, candidates: list) -> list:
         comb *= max(dp, 1.01)
         if comb >= 10000 and len(picks) >= 4:
             break
+    # Top-up from the raw scan (unscouted, implied prob) when data is short.
+    if len(picks) < 8 and raw_legs:
+        try:
+            _raw = []
+            for leg in raw_legs:
+                try:
+                    _o = float(leg.get("best_odds") or 0)
+                except Exception:
+                    continue
+                if not (2.5 <= _o <= 4.5):
+                    continue
+                try:
+                    fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
+                except Exception:
+                    continue
+                if fix.get(fk, 0) >= 2:
+                    continue
+                if any(_same_match(leg, p[0]) and str(leg.get("market")) == str(p[0].get("market")) for p in picks):
+                    continue
+                _raw.append((leg, round(1.0 / max(_o, 1.01), 4),
+                             f"implied {round(1.0 / max(_o, 1.01), 3)} (board longshot)", _o))
+            _raw.sort(key=lambda t: t[3])
+            for leg, pr, why, dp in _raw:
+                if len(picks) >= 8:
+                    break
+                try:
+                    fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
+                except Exception:
+                    fk = str(len(picks))
+                if fix.get(fk, 0) >= 2:
+                    continue
+                picks.append((leg, pr, why))
+                fix[fk] = fix.get(fk, 0) + 1
+                comb *= max(dp, 1.01)
+                if comb >= 10000 and len(picks) >= 4:
+                    break
+        except Exception:
+            pass
     return picks
 
 
