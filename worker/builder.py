@@ -290,10 +290,14 @@ def _enrich_with_fotmob(leg: dict) -> dict:
     return leg
 
 
+_LAST_BUILD_DIAG: dict = {}
+
+
 def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                   max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
     """Build accumulator ticket(s). kind=daily (4-6 legs, value zone ~2.2)
     or weekly (up to 8 legs, value zone ~3.0, bigger payout)."""
+    globals()["_LAST_BUILD_DIAG"] = {"kind": kind}
     kind = kind if kind in ("daily", "weekly") else "daily"
     weekly = (kind == "weekly")
     max_legs = max_legs or (8 if weekly else config.MAX_LEGS_PER_ACCA)
@@ -537,6 +541,10 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                     progress_cb("Nothing filed: pool too thin for a steady ticket.")
         except Exception:
             pass
+        globals()["_LAST_BUILD_DIAG"] = {"kind": "daily",
+            "steady_cands": len(value_cands), "dream_cands": len(dream_cands),
+            "steady_legs": len(v_built), "dream_legs": len(d_built),
+            "steady_comb": v_comb, "dream_comb": d_comb}
         return tickets
     built = _materialize(picked)
     if not built:
@@ -556,6 +564,8 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         "stake": stake,
     }
     tickets = [ticket]
+    globals()["_LAST_BUILD_DIAG"] = {"kind": kind, "steady_legs": len(built),
+        "steady_comb": combined}
     return tickets
 
 
@@ -890,8 +900,11 @@ def _agentic_stake(built: list, kind: str, use_ai: bool, progress_cb=None) -> di
 
 
 def build_and_save(max_legs: int | None = None, use_ai: bool = True,
-                   max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
-    """Build tickets and persist to DB. Returns ticket list."""
+                   max_credits: int | None = None, progress_cb=None, kind: str = "daily",
+                   detail: dict | None = None) -> list:
+    """Build tickets and persist to DB. Returns ticket list.
+    detail (optional dict) is filled with last-build diagnostics
+    (candidate counts, filed legs/odds) for the public /status."""
     import db as db_mod
     try:
         import db  # worker-local
@@ -906,6 +919,13 @@ def build_and_save(max_legs: int | None = None, use_ai: bool = True,
         db.prune_pending(kind=tickets[0].get("kind", kind) if tickets else kind, keep=2)
     except Exception:
         pass
+    if detail is not None:
+        try:
+            detail.update(globals().get("_LAST_BUILD_DIAG") or {})
+            detail["filed"] = [(t["id"], (t.get("stake") or {}).get("tier", "value"),
+                                 len(t.get("legs", [])), t.get("combined_odds")) for t in tickets]
+        except Exception:
+            pass
     return tickets
 
 

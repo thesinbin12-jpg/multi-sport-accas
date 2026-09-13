@@ -95,8 +95,10 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
             except Exception:
                 pass
 
+        _detail: dict = {}
         tickets = builder.build_and_save(max_legs=max_legs, use_ai=use_ai,
-                                         max_credits=max_credits, progress_cb=progress, kind=kind)
+                                         max_credits=max_credits, progress_cb=progress, kind=kind,
+                                         detail=_detail)
         try:
             _kinds = [(t.get("stake") or {}).get("tier", "value") for t in tickets]
         except Exception:
@@ -107,10 +109,23 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
         except Exception:
             _main_id = None
         with _state_lock:
+            try:
+                _bits = []
+                if _detail.get("steady_legs"):
+                    _bits.append(f"steady {_detail.get('steady_comb')}x ({_detail.get('steady_legs')} legs)")
+                if _detail.get("dream_legs"):
+                    _bits.append(f"dreamer {_detail.get('dream_comb')}x ({_detail.get('dream_legs')} legs)")
+                _det = (" — " + " + ".join(_bits)) if _bits else ""
+                if not _bits and _detail.get("kind") == "daily":
+                    _det = (f" — steady cands {_detail.get('steady_cands', '?')}, "
+                            f"dreamer cands {_detail.get('dream_cands', '?')}")
+            except Exception:
+                _det = ""
             BUILD_STATE.update(status="done", finished_at=datetime.now(timezone.utc).isoformat(),
                                tickets_built=len(tickets),
                                last_ticket_id=_main_id or (tickets[0]["id"] if tickets else None),
-                               message=(f"built {len(tickets)} ticket(s)" + (" (value+dream)" if "dream" in _kinds else "") if tickets
+                               last_build=_detail,
+                               message=(f"built {len(tickets)} ticket(s)" + (" (value+dream)" if "dream" in _kinds else "") + _det if tickets
                                         else "no legs found — try again later"))
     except Exception as e:
         _set_state(status="error", finished_at=datetime.now(timezone.utc).isoformat(),
