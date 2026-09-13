@@ -1,5 +1,6 @@
-"""verifier.py — Result verification via Odds API scores + football-data.org fallback.
-Web context via Tavily -> DuckDuckGo chain for undecided legs."""
+"""verifier.py — Result verification via FotMob + Odds API scores + football-data.org.
+Web context via FREE search (Brave -> DDG) for undecided legs; Tavily only
+as last resort when free backends return nothing (quota guard)."""
 from datetime import datetime, timezone, timedelta
 
 try:
@@ -28,7 +29,8 @@ def _all_sport_keys() -> list:
 
 def verify_all_pending(days_from: int = 3) -> dict:
     """Settle pending tickets via selection-aware verification. Returns summary.
-    Stale undecided legs get web context (Tavily -> DuckDuckGo, capped 5/run)."""
+    Stale undecided legs get free web context (Brave -> DDG, capped 5/run;
+    Tavily only when free backends are empty)."""
     db.init_schema()
     tickets = [t for t in db.get_tickets(limit=50) if t.get("status") == "pending"]
     if not tickets:
@@ -169,7 +171,12 @@ def _settle_leg(selection: str, hs: int, aws: int) -> bool | None:
 
 def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int, leg: dict | None = None):
     """Return (hs, aws) full-time goals for a match, or None.
-    FotMob first (free, ~185 leagues incl. obscure), Odds API, football-data fallback."""
+    Order (all free except Odds API): FotMob (keyless, ~185 leagues) ->
+    Odds API scores -> football-data.org -> free web search (Brave -> DDG).
+    NOTE: Betika REST is prematch-only (no results endpoint — probed
+    /v1/results, /v1/matches/results, /v1/livescore, all 404; results page
+    is an SPA shell), so it cannot settle. ESPN dropped per user call
+    (limited league coverage; FotMob covers it)."""
     if " vs " not in match:
         return None
     home, away = [p.strip().lower() for p in match.split(" vs ", 1)]
@@ -178,39 +185,9 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
             from learner import source_usable
         except ImportError:
             from worker.learner import source_usable  # type: ignore
-        _use_espn, _use_fm = source_usable("scores-espn"), source_usable("scores-fotmob")
+        _use_fm = source_usable("scores-fotmob")
     except Exception:
-        _use_espn, _use_fm = True, True
-    if _use_espn:
-        try:
-            try:
-                from espn import find_score as _espn_score
-            except ImportError:
-                from worker.espn import find_score as _espn_score  # type: ignore
-            _lg = (leg or {}).get("league", "")
-            _ct = (leg or {}).get("commence_time", "")
-            try:
-                _ref = datetime.fromisoformat(str(_ct).replace("Z", "+00:00")).date() if _ct else None
-            except Exception:
-                _ref = None
-            _es = _espn_score(home, away, league_hint=_lg, ref_date=_ref,
-                              match_fn=lambda h, a, hn, an: _names_match(h, hn) and _names_match(a, an))
-            if _es:
-                try:
-                    if isinstance(leg, dict):
-                        leg["_src"] = "espn"
-                except Exception:
-                    pass
-                return _es
-        except Exception as e_espn:
-            try:
-                try:
-                    from learner import source_record as _sr1
-                except ImportError:
-                    from worker.learner import source_record as _sr1  # type: ignore
-                _sr1("scores-espn", False, 0, ("import:" if "import" in str(type(e_espn).__name__).lower() or "No module" in str(e_espn) else "") + str(e_espn)[:150])
-            except Exception:
-                pass
+        _use_fm = True
     if _use_fm:
         try:
             try:
@@ -521,7 +498,24 @@ def _ddg_search(query: str, max_results: int = 3) -> str:
 
 
 def web_search(query: str, max_results: int = 3) -> dict:
-    """Tavily first, DuckDuckGo fallback. Returns {text, source}."""
+    """FREE-first search (Brave -> DDG via websearch stack). Tavily only as
+    last resort when free backends return nothing (quota guard: Tavily at
+    ~20% month). Returns {text, source}."""
+    try:
+        try:
+            from websearch import search as _free_search
+        except ImportError:
+            from worker.websearch import search as _free_search  # type: ignore
+        _free = _free_search(query, max_results=max_results) or []
+        if _free:
+            _txt = " | ".join(
+                f"{x.get('title', '')}: {str(x.get('snippet', ''))[:160]}"
+                for x in _free[:max_results] if x.get("title") or x.get("snippet"))
+            if _txt:
+                _src = (_free[0].get("source") or "free").lower()
+                return {"text": _txt, "source": "brave" if "brave" in _src else "duckduckgo" if "ddg" in _src else _src}
+    except Exception:
+        pass
     text = _tavily_search(query, max_results)
     if text:
         return {"text": text, "source": "tavily"}

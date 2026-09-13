@@ -28,8 +28,26 @@ except ImportError:
         _HAS_FOTMOB = False
 
 
+def _news_search(query: str, max_results: int = 3) -> str:
+    """FREE-first news context (Brave -> DDG). Tavily only when free backends
+    return nothing AND a key exists (quota guard). Never raises."""
+    try:
+        try:
+            from websearch import search as _free_search
+        except ImportError:
+            from worker.websearch import search as _free_search  # type: ignore
+        _free = _free_search(query, max_results=max_results) or []
+        if _free:
+            return " | ".join(
+                f"{x.get('title', '')}: {str(x.get('snippet', ''))[:160]}"
+                for x in _free[:max_results] if x.get("title") or x.get("snippet"))
+    except Exception:
+        pass
+    return _tavily_search(query, max_results)
+
+
 def _tavily_search(query: str, max_results: int = 3) -> str:
-    """Optional Tavily news context. Skipped gracefully when key missing."""
+    """Last-resort Tavily call (only when free backends empty). Skipped when key missing."""
     key = config.TAVILY_API_KEY
     if not key:
         return ""
@@ -419,9 +437,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             prob, why = leg["_swarm"][0], leg["_swarm"][1]
             leg["analysis"] = leg["_swarm"][2]
         elif use_ai:
-            news = ""
-            if os.environ.get("TAVILY_API_KEY"):
-                news = _tavily_search(f"{leg.get('home_team')} vs {leg.get('away_team')} {leg.get('league')} prediction injuries")
+            news = _news_search(f"{leg.get('home_team')} vs {leg.get('away_team')} {leg.get('league')} prediction injuries")
             prob, why = _ai_assess(leg, news)
         elif data:
             prob, why = data[0], f"data model {data[0]:.3f} ({str(data[3])[:160]})"
