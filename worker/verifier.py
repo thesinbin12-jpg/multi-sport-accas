@@ -56,6 +56,8 @@ def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
             if len(contexts) < 5:
                 for leg in db.get_legs(t["id"]):
                     if leg.get("result") == "pending" and len(contexts) < 5:
+                        if not _kickoff_passed(leg.get("commence_time", "")):
+                            continue  # upcoming match: no story yet, don't burn search on it
                         ctx = leg_context(leg.get("match", ""))
                         if ctx.get("text"):
                             contexts.append({"match": leg.get("match"),
@@ -94,6 +96,20 @@ def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
     if contexts:
         out["contexts"] = contexts
     return out
+
+
+def _kickoff_passed(ct: str) -> bool:
+    """True when a leg's kickoff time is in the past (missing/NAIVE time ->
+    True: better to spend one capped search than to leave a decider blind)."""
+    try:
+        if not ct:
+            return True
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt <= datetime.now(timezone.utc)
+    except Exception:
+        return True
 
 
 def _check_leg_result(match: str, scanner: OddsScanner, cache: dict, days_from: int) -> str:
