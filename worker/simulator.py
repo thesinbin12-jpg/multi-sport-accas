@@ -41,21 +41,29 @@ def simulate(exp_h, exp_a, p_btts=0.5, n=2000, seed=7, h2h_tilt=0.0, market_mix=
         c = {"H": 0, "D": 0, "A": 0, "BTTS_Y": 0, "O15": 0, "O25": 0, "O35": 0,
              "DC_1X": 0, "DC_X2": 0, "DC_12": 0}
         for _ in range(max(100, n)):
+            use_mkt = (pname == "market" and rng.random() < market_mix)
             i, j = _sample_poisson(rng, eh), _sample_poisson(rng, ea)
-            if i > j:
-                c["H"] += 1
-            elif i == j:
-                c["D"] += 1
-            else:
-                c["A"] += 1
-            btts = (i > 0 and j > 0)
-            if pname == "market" and rng.random() < market_mix:
-                # blend: resample outcome bucket from market implied
+            if use_mkt:
+                # REPLACE the simulated 1X2 bucket with a market-implied draw.
+                # (old code ADDED it on top, inflating H+D+A past 1.0).
+                # Score-dependent tallies below still use the simulated i,j.
                 r = rng.random()
-                c["H"] += 1 if r < mkt_h else 0
-                c["D"] += 1 if mkt_h <= r < mkt_h + mkt_d else 0
-                c["A"] += 1 if r >= mkt_h + mkt_d else 0
-            if btts or (pname == "market" and rng.random() < pb * market_mix):
+                if r < mkt_h:
+                    c["H"] += 1
+                elif r < mkt_h + mkt_d:
+                    c["D"] += 1
+                else:
+                    c["A"] += 1
+                btts = rng.random() < pb
+            else:
+                if i > j:
+                    c["H"] += 1
+                elif i == j:
+                    c["D"] += 1
+                else:
+                    c["A"] += 1
+                btts = (i > 0 and j > 0)
+            if btts:
                 c["BTTS_Y"] += 1
             tot = i + j
             if tot > 1.5:

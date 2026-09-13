@@ -449,9 +449,32 @@ def _sim_line(home, away, selection, market, odds):
             imp = 1.0 / float(odds) if float(odds) > 1 else 0.5
         except Exception:
             imp = 0.5
-        sim = simulate(exp_h, exp_a, p_btts, n=2000, seed=abs(hash(home + away)) % 100000,
+        imp = min(max(imp, 0.05), 0.9)
+        try:
+            # side-aware market triple (old code used the SELECTION price as the
+            # HOME mass even for away picks, tilting every away leg homeward)
+            _s = str(selection or "").lower()
+            _h, _a = str(home or "").lower(), str(away or "").lower()
+            _d0 = min(0.33, imp * 0.55)
+            if _s == _h:
+                _mkt = (imp, _d0, max(0.05, 1 - imp - _d0))
+            elif _s == _a:
+                _mkt = (max(0.05, 1 - imp - _d0), _d0, imp)
+            elif _s == "draw":
+                _r = max(0.05, (1 - imp) / 2)
+                _mkt = (_r, imp, max(0.05, 1 - imp - _r))
+            else:
+                _mkt = (0.42, 0.28, 0.30)
+        except Exception:
+            _mkt = (imp, min(0.35, imp * 0.6), max(0.05, 1 - imp - min(0.35, imp * 0.6)))
+        try:
+            # md5, not hash(): str-hash is salted per process (old seed wandered)
+            _seed = int(__import__("hashlib").md5(f"{home}|{away}".encode()).hexdigest(), 16) % 100000
+        except Exception:
+            _seed = 7
+        sim = simulate(exp_h, exp_a, p_btts, n=2000, seed=_seed,
                        h2h_tilt=tilt, market_mix=0.2,
-                       mkt_h=imp, mkt_d=min(0.35, imp * 0.6), mkt_a=max(0.05, 1 - imp - min(0.35, imp * 0.6)))
+                       mkt_h=_mkt[0], mkt_d=_mkt[1], mkt_a=_mkt[2])
         return describe(sim, selection, market, home, away)
     except Exception:
         return ""
