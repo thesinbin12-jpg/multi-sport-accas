@@ -475,18 +475,19 @@ def _tavily_search(query: str, max_results: int = 3) -> str:
 
 
 def _ddg_search(query: str, max_results: int = 3) -> str:
-    """DuckDuckGo html fallback — used when Tavily credits run out."""
+    """DuckDuckGo lite fallback (POST, works from datacenter IPs). NOTE: the
+    old html.duckduckgo.com GET endpoint now returns a 202 bot-challenge, so
+    this uses lite.duckduckgo.com instead. Tavily stays out of this path."""
     try:
         import re as _re
         import requests
-        from urllib.parse import quote_plus
-        r = requests.get("https://html.duckduckgo.com/html/?q=" + quote_plus(query),
-                         headers=_UA, timeout=20)
+        r = requests.post("https://lite.duckduckgo.com/lite/", data={"q": query},
+                          headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
         if r.status_code != 200:
             return ""
         html = r.text
-        titles = _re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, _re.DOTALL)[:max_results]
-        snips = _re.findall(r'class="result__snippet"[^>]*>(.*?)</a?>', html, _re.DOTALL)[:max_results]
+        titles = _re.findall(r"class=['\"]result-link['\"][^>]*>(.*?)</a", html)[:max_results]
+        snips = _re.findall(r"class=['\"]result-snippet['\"][^>]*>(.*?)</td", html)[:max_results]
         clean = lambda s: _re.sub(r"<[^>]+>", "", s).strip()[:160]
         parts = []
         for i, t in enumerate(titles):

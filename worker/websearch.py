@@ -75,8 +75,8 @@ def ddg_search(query, max_results=5, timeout=20):
                      headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
         if r.status_code != 200:
             return out
-        titles = re.findall(r'class="result-link"[^>]*>(.*?)</a', r.text)
-        snips = re.findall(r'class="result-snippet"[^>]*>(.*?)</td', r.text)
+        titles = re.findall(r"class=['\"]result-link['\"][^>]*>(.*?)</a", r.text)
+        snips = re.findall(r"class=['\"]result-snippet['\"][^>]*>(.*?)</td", r.text)
         for i, t in enumerate(titles[:max_results]):
             title = html.unescape(re.sub(r"<.*?>", "", t)).strip()
             sn = html.unescape(re.sub(r"<.*?>", "", snips[i])).strip() if i < len(snips) else ""

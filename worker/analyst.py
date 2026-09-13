@@ -352,7 +352,7 @@ def get_news(home, away, league="", timeout=20):
         r = _rq.post(_DDG_BASE, data={"q": q + " injuries lineup"}, timeout=timeout,
                      headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
-            texts = re.findall(r'class="result-snippet"[^>]*>(.*?)</', r.text)
+            texts = re.findall(r"class=['\"]result-snippet['\"][^>]*>(.*?)</", r.text)
             clean = [re.sub(r"<.*?>", "", t).strip() for t in texts[:5]]
             ddg_bits = [t for t in clean if t]
     except Exception:
