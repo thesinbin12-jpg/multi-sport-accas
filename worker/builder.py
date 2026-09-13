@@ -456,7 +456,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     # Daily = TWO slips from one trigger: steady (~50x, best probs) +
     # dreamer (high-odds longshots, own sourcing so it always files).
     # Weekly = single volume ticket (first 8, extras prob>=0.45 + EV>=0.95).
-    # Same-match guard always (dreamer: 2 legs/fixture max instead).
+    # Same-match guard always: one leg per fixture on every ticket.
     if kind == "daily":
         value_cands = _pick_conservative(assessed)
         _ensure_diversity(value_cands, assessed)
@@ -724,8 +724,9 @@ def _trim_to_target(built: list, target: float = 50.0, min_legs: int = 4, max_le
 def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None) -> list:
     """Dreamer longshot picks with OWN sourcing (never starves on swarm
     leftovers): best-known prob per leg (swarm > data model > implied),
-    odds band 2.5-7.0, prob>=0.10. Ranked by EV, up to 8 legs (2/fixture),
-    stops at 10000x with >=4. Needs >=3 to file.
+    odds band 2.5-7.0, prob>=0.10. Ranked by EV, up to 8 legs, ONE per
+    fixture (same-match doubles are near-duplicate exposure), stops at
+    10000x with >=4. Needs >=3 to file.
     When the data-scored pool is short, tops up from the RAW scan legs
     (2.5-4.5, price-ascending, implied prob) so the pair ALWAYS files
     while longshots exist on the board (verified 1000+ live)."""
@@ -769,7 +770,7 @@ def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None
             fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
         except Exception:
             fk = str(len(picks))
-        if fix.get(fk, 0) >= 2:
+        if fix.get(fk, 0) >= 1:
             continue
         picks.append((leg, pr, why))
         fix[fk] = fix.get(fk, 0) + 1
@@ -791,7 +792,7 @@ def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None
                     fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
                 except Exception:
                     continue
-                if fix.get(fk, 0) >= 2:
+                if fix.get(fk, 0) >= 1:
                     continue
                 if any(_same_match(leg, p[0]) and str(leg.get("market")) == str(p[0].get("market")) for p in picks):
                     continue
@@ -805,7 +806,7 @@ def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None
                     fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
                 except Exception:
                     fk = str(len(picks))
-                if fix.get(fk, 0) >= 2:
+                if fix.get(fk, 0) >= 1:
                     continue
                 picks.append((leg, pr, why))
                 fix[fk] = fix.get(fk, 0) + 1
