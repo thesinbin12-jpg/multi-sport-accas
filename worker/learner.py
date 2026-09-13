@@ -148,6 +148,30 @@ def init_learner_schema() -> None:
             updated_at TEXT NOT NULL
         )
         """
+        calib = """
+        CREATE TABLE IF NOT EXISTS acca_calib (
+            bucket TEXT PRIMARY KEY,
+            n INTEGER NOT NULL DEFAULT 0,
+            won INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+        tmem = """
+        CREATE TABLE IF NOT EXISTS acca_team_memory (
+            team TEXT PRIMARY KEY,
+            n INTEGER NOT NULL DEFAULT 0,
+            won INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+        src_audit = """
+        CREATE TABLE IF NOT EXISTS acca_source_audit (
+            pair TEXT PRIMARY KEY,
+            agree INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
         if _is_pg():
             patterns = patterns.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
             debrief = debrief.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
@@ -160,6 +184,9 @@ def init_learner_schema() -> None:
         cur.execute(llmerr)
         cur.execute(llmmodels)
         cur.execute(srcstat)
+        cur.execute(calib)
+        cur.execute(tmem)
+        cur.execute(src_audit)
         conn.commit()
     finally:
         conn.close()
@@ -925,7 +952,13 @@ def _explain_losses(legs: list, max_n: int = 6) -> list:
     out = []
     try:
         fresh = [l for l in legs
-                 if l.get("result") == "lost" and not (l.get("lost_why") or "")][:max_n]
+                 if l.get("result") == "lost" and not (l.get("lost_why") or "")]
+        # confident misses first: biggest surprises write the deepest map
+        try:
+            fresh.sort(key=lambda l: -float(l.get("probability", 0) or 0))
+        except Exception:
+            pass
+        fresh = fresh[:max_n]
         if not fresh:
             return out
         for leg in fresh:
@@ -1093,6 +1126,232 @@ def probe_sources() -> dict:
 
 # ---- public API ----
 
+CALIB_BUCKETS = ["0.20-0.35", "0.35-0.50", "0.50-0.65", "0.65-0.80", "0.80-1.01"]
+
+
+def _calib_bucket(prob: float) -> str:
+    try:
+        p = float(prob)
+    except (TypeError, ValueError):
+        return CALIB_BUCKETS[2]
+    if p < 0.35:
+        return CALIB_BUCKETS[0]
+    if p < 0.50:
+        return CALIB_BUCKETS[1]
+    if p < 0.65:
+        return CALIB_BUCKETS[2]
+    if p < 0.80:
+        return CALIB_BUCKETS[3]
+    return CALIB_BUCKETS[4]
+
+
+def rebuild_calibration() -> dict:
+    """Rebuild the calibration ledger from ALL decided legs (delete+insert =
+    idempotent, never double-counts). Returns {bucket: {n, won, rate}}."""
+    out: dict = {}
+    try:
+        init_learner_schema()
+        legs = _all_decided_legs(limit=5000)
+        agg: dict = {}
+        for leg in legs:
+            try:
+                b = _calib_bucket(leg.get("probability", 0.5))
+                e = agg.setdefault(b, [0, 0])
+                e[0] += 1
+                if leg.get("result") == "won":
+                    e[1] += 1
+            except Exception:
+                continue
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "DELETE FROM acca_calib")
+            for b, (n, w) in agg.items():
+                _exec(cur, "INSERT INTO acca_calib (bucket, n, won, updated_at) VALUES (%s,%s,%s,%s)",
+                       (b, n, w, _now()))
+                out[b] = {"n": n, "won": w, "rate": round(w / n, 3) if n else 0.0}
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return out
+
+
+def calibration_line() -> str:
+    """One honest self-check line + overconfidence flag (n>=5). Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT bucket, n, won FROM acca_calib ORDER BY bucket")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return ""
+        bits, worst = [], None
+        for b, n, w in rows:
+            try:
+                rate = (w or 0) / max(n or 0, 1)
+                bits.append(f"{b}: {rate:.0%} (n={n})")
+                lo, hi = float(str(b).split("-")[0]), float(str(b).split("-")[1])
+                gap = rate - (lo + hi) / 2
+                if (n or 0) >= 5 and (worst is None or gap < worst[0]):
+                    worst = (gap, b, rate, (lo + hi) / 2)
+            except Exception:
+                continue
+        line = "Calibration (my odds vs reality): " + "; ".join(bits)
+        if worst and worst[0] < -0.07:
+            line += f". Watch: {worst[1]} hits {worst[2]:.0%} vs {worst[3]:.0%} expected — overconfident there."
+        return line
+    except Exception:
+        return ""
+
+
+def rebuild_team_memory() -> int:
+    """Per-club involvement record from ALL decided legs (delete+insert).
+    Keyed by teams.canonical so rebrands/aliases converge. Returns clubs."""
+    try:
+        init_learner_schema()
+        try:
+            from teams import canonical as _canon
+        except ImportError:
+            from worker.teams import canonical as _canon  # type: ignore
+        legs = _all_decided_legs(limit=5000)
+        agg: dict = {}
+        for leg in legs:
+            try:
+                m = str(leg.get("match", ""))
+                if " vs " not in m:
+                    continue
+                h, a = [p.strip() for p in m.split(" vs ", 1)]
+                won = 1 if leg.get("result") == "won" else 0
+                for tm in {_canon(h), _canon(a)}:
+                    if not tm:
+                        continue
+                    e = agg.setdefault(tm, [0, 0])
+                    e[0] += 1
+                    e[1] += won
+            except Exception:
+                continue
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "DELETE FROM acca_team_memory")
+            for tm, (n, w) in agg.items():
+                _exec(cur, "INSERT INTO acca_team_memory (team, n, won, updated_at) VALUES (%s,%s,%s,%s)",
+                       (tm, n, w, _now()))
+            conn.commit()
+        finally:
+            conn.close()
+        return len(agg)
+    except Exception:
+        return 0
+
+
+def get_team_records(home: str, away: str) -> dict:
+    """{query_name: {n, won, rate}} involvement records (min sample 3 else {})."""
+    out: dict = {}
+    try:
+        init_learner_schema()
+        try:
+            from teams import canonical as _canon2
+        except ImportError:
+            from worker.teams import canonical as _canon2  # type: ignore
+        want = {_canon2(home): home, _canon2(away): away}
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            for canon, orig in want.items():
+                if not canon:
+                    continue
+                _exec(cur, "SELECT n, won FROM acca_team_memory WHERE team=%s", (canon,))
+                row = cur.fetchone()
+                if row and (row[0] or 0) >= 3:
+                    out[str(orig)] = {"n": row[0], "won": row[1],
+                                      "rate": round((row[1] or 0) / max(row[0], 1), 2)}
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return out
+
+
+def record_source_audit(a: str, b: str, agree: bool) -> None:
+    """One agreement event between two score sources. Never raises."""
+    try:
+        if not a or not b:
+            return
+        pair = "-".join(sorted([str(a), str(b)]))[:64]
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            if _is_pg():
+                cur.execute("INSERT INTO acca_source_audit (pair, agree, total, updated_at) VALUES (%s,%s,1,%s) "
+                            "ON CONFLICT (pair) DO UPDATE SET agree=acca_source_audit.agree+EXCLUDED.agree, "
+                            "total=acca_source_audit.total+1, updated_at=EXCLUDED.updated_at",
+                            (pair, 1 if agree else 0, _now()))
+            else:
+                _exec(cur, "INSERT INTO acca_source_audit (pair, agree, total, updated_at) VALUES (%s,%s,1,%s) "
+                           "ON CONFLICT (pair) DO UPDATE SET agree=agree+excluded.agree, total=total+1, updated_at=excluded.updated_at",
+                           (pair, 1 if agree else 0, _now()))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def source_audit_line() -> str:
+    """Agreement rates between score sources. '' when no data. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT pair, agree, total FROM acca_source_audit ORDER BY total DESC")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        bits = []
+        for pair, ag, tot in rows:
+            try:
+                if (tot or 0) >= 3:
+                    bits.append(f"{pair} agree {(ag or 0) / max(tot, 1):.0%} (n={tot})")
+            except Exception:
+                continue
+        return ("Source truth audits: " + "; ".join(bits)) if bits else ""
+    except Exception:
+        return ""
+
+
+def last_learn_gap_hours() -> float | None:
+    """Hours since the last debrief. None when never ran. Never raises."""
+    try:
+        init_learner_schema()
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            _exec(cur, "SELECT MAX(created_at) FROM acca_debrief")
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
 def nightly_learn(days_from: int = 5) -> dict:
     """One nightly pass: verify (act) -> LLM reason -> persist (act).
 
@@ -1100,7 +1359,20 @@ def nightly_learn(days_from: int = 5) -> dict:
     but the LLM still revisits full history against the previous debrief.
     """
     init_learner_schema()
+    _gap_note = ""
+    try:
+        _gap = last_learn_gap_hours()
+        if _gap is not None and _gap > 30:
+            days_from = max(int(days_from or 0), 7)
+            _gap_note = f" Watchdog: last learn {_gap:.0f}h ago — catch-up window {days_from}d."
+    except Exception:
+        pass
     verify_summary = verifier.verify_all_pending(days_from=days_from)
+    try:
+        _calib = rebuild_calibration()
+        _tmem_n = rebuild_team_memory()
+    except Exception:
+        _calib, _tmem_n = {}, 0
     pruned = 0
     try:
         pruned += db.prune_pending("daily", keep=2)
@@ -1134,7 +1406,7 @@ def nightly_learn(days_from: int = 5) -> dict:
     header = (f"run {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}: "
               f"verified {verify_summary.get('checked', 0)} ticket(s) "
               f"({verify_summary.get('won', 0)}W/{verify_summary.get('lost', 0)}L, "
-              f"{verify_summary.get('pending', 0)} still pending)")
+              f"{verify_summary.get('pending', 0)} still pending){_gap_note}")
     lessons = " | ".join(decision.get("lessons") or [])
     notes = f"{header}. {decision.get('notes','')}"
     if lessons:
@@ -1146,6 +1418,18 @@ def nightly_learn(days_from: int = 5) -> dict:
     for s in (lost_stories or []):
         if s.get("why") and s["why"] != "unexplained":
             notes += f" Lost {s['match']}: {s['why']}."
+    try:
+        _cline = calibration_line()
+        if _cline:
+            notes += f" {_cline}."
+    except Exception:
+        pass
+    try:
+        _aline = source_audit_line()
+        if _aline:
+            notes += f" {_aline}."
+    except Exception:
+        pass
     if decision.get("llm_model"):
         notes += f" (reasoned by {decision['llm_model']})"
 
@@ -1158,6 +1442,8 @@ def nightly_learn(days_from: int = 5) -> dict:
         "personas": persona.get("table"),
         "weekly": watch,
         "lost_stories": lost_stories,
+        "calibration": _calib,
+        "team_memory_teams": _tmem_n,
         "sources": {"health": source_health(), "probe": probe_sources()},
         "decision": {k: v for k, v in decision.items()},
     }

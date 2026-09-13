@@ -394,6 +394,14 @@ def _learner_context(league=""):
             from learner import get_strategy, recent_loss_notes, _last_debrief
         except ImportError:
             from worker.learner import get_strategy, recent_loss_notes, _last_debrief  # type: ignore
+        try:
+            try:
+                from learner import calibration_line as _cline
+            except ImportError:
+                from worker.learner import calibration_line as _cline  # type: ignore
+            _cl = _cline() or ""
+        except Exception:
+            _cl = ""
         strat = get_strategy() or {}
         notes = recent_loss_notes(league, 2) if league else []
         prev = _last_debrief() or {}
@@ -412,6 +420,8 @@ def _learner_context(league=""):
             bits.append("persona trust: " + ", ".join("%s=%s" % (k, v) for k, v in list(pw.items())[:9]))
         if lessons:
             bits.append("lessons: " + " | ".join(str(x)[:140] for x in lessons[:3]))
+        if _cl:
+            bits.append("SELF-KNOWLEDGE: " + _cl[:300])
         for ln in notes:
             bits.append("PAINFUL LESSON (%s %s): %s" % (ln.get("match"), ln.get("selection"), str(ln.get("why"))[:160]))
         return ("Learner feedback: " + " | ".join(bits))[:1200] if bits else ""
@@ -696,6 +706,28 @@ def _fm_line(leg: dict) -> str:
         return ""
 
 
+def _team_line(home: str, away: str) -> str:
+    """Club involvement records (won rate when the club is on the slip).
+    '' when neither club has history yet."""
+    try:
+        try:
+            from learner import get_team_records as _gtr
+        except ImportError:
+            from worker.learner import get_team_records as _gtr  # type: ignore
+        recs = _gtr(home, away) or {}
+        if not recs:
+            return ""
+        bits = []
+        for tm, st in recs.items():
+            try:
+                bits.append(f"{tm}: legs with them involved won {st.get('rate', 0):.0%} (n={st.get('n', 0)})")
+            except Exception:
+                continue
+        return "Club history: " + (" | ".join(bits)[:300] if bits else "none yet")
+    except Exception:
+        return ""
+
+
 def analyze_finalist(leg, progress_cb=None, history_struct=None):
     """Full swarm on ONE shortlisted leg. Returns (prob, why, analysis). Never raises.
     history_struct=(home_struct, away_struct) reuses scout-fetched FDO data."""
@@ -755,6 +787,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
              f"Data scout (pure-code models, no LLM): {(leg.get('_data') or (0, 0, ''))[2] if isinstance(leg.get('_data'), tuple) else ''}\n"
              f"{sim_text}\n"
              f"{_fm_line(leg)}\n"
+             f"{_team_line(home, away)}\n"
              f"{_learner_context(league)}\n"
              f"History: {history[:900]}\nNews: {news[:1200]}")
 

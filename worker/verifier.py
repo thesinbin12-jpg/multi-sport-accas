@@ -35,6 +35,12 @@ def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
     tickets = [t for t in db.get_tickets(limit=50) if t.get("status") == "pending"]
     if not tickets:
         return {"checked": 0, "won": 0, "lost": 0, "pending": 0}
+    # Oldest slips first: the routes we keep failing get walked deliberately,
+    # and capped web evidence goes to the longest-waiting legs.
+    try:
+        tickets.sort(key=lambda t: str(t.get("created_at") or ""))
+    except Exception:
+        pass
 
     won = lost = still_pending = 0
     skipped_future_all = 0
@@ -117,6 +123,63 @@ def _kickoff_passed(ct: str) -> bool:
         return dt <= datetime.now(timezone.utc)
     except Exception:
         return True
+
+
+def _audit_fdo_score(home: str, away: str, score, cache: dict, days_from: int) -> None:
+    """Best-effort FotMob-vs-FDO agreement audit (the verifier checking its
+    own map). Shares the cached FDO call — no extra quota. Never raises."""
+    try:
+        key = config.FOOTBALL_DATA_ORG_KEY if hasattr(config, "FOOTBALL_DATA_ORG_KEY") else ""
+        if not key:
+            return
+        if "_fd_matches" not in cache:
+            try:
+                import requests
+                today = datetime.now(timezone.utc).date()
+                start = (today - timedelta(days=days_from)).isoformat()
+                r = requests.get("https://api.football-data.org/v4/matches",
+                                 headers={"X-Auth-Token": key},
+                                 params={"status": "FINISHED", "dateFrom": start, "dateTo": today.isoformat()},
+                                 timeout=20)
+                cache["_fd_matches"] = r.json().get("matches", []) if r.status_code == 200 else []
+            except Exception:
+                cache["_fd_matches"] = []
+        ms = cache["_fd_matches"] or []
+        if not ms:
+            return
+        try:
+            from teams import resolve_pair as _tres_a
+        except ImportError:
+            from worker.teams import resolve_pair as _tres_a  # type: ignore
+        pairs = []
+        for m in ms:
+            try:
+                pairs.append((str(m.get("homeTeam", {}).get("name", "")),
+                              str(m.get("awayTeam", {}).get("name", ""))))
+            except Exception:
+                continue
+        bp, _ = _tres_a(home, away, pairs)
+        if not bp:
+            return
+        for m in ms:
+            try:
+                if (str(m.get("homeTeam", {}).get("name", "")) != bp[0] or
+                        str(m.get("awayTeam", {}).get("name", "")) != bp[1]):
+                    continue
+                ft = (m.get("score") or {}).get("fullTime", {}) or {}
+                fdo = (_num(ft.get("home")), _num(ft.get("away")))
+                if fdo[0] is None:
+                    return
+                try:
+                    from learner import record_source_audit as _rsa
+                except ImportError:
+                    from worker.learner import record_source_audit as _rsa  # type: ignore
+                _rsa("fotmob", "fdo", tuple(fdo) == tuple(score))
+                return
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def _check_leg_result(match: str, scanner: OddsScanner, cache: dict, days_from: int) -> str:
@@ -230,6 +293,10 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
             fm = _fotmob_score(home, away, ref_date=ref)
             if fm:
                 score, _fuzzy = fm
+                try:
+                    _audit_fdo_score(home, away, score, cache, days_from)
+                except Exception:
+                    pass
                 try:
                     import logging as _lg
                     _lg.getLogger("acca").info("settle %s via FotMob%s %s", match[:60],
