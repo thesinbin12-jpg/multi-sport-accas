@@ -367,6 +367,7 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3, fallback_da
     correct = 0
     decided = 0
     skipped_future = 0
+    voided = 0
     sources: dict = {}
     unresolved: list = []
     for leg in legs:
@@ -381,7 +382,18 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3, fallback_da
             continue
         score = _resolve_score(leg.get("match", ""), scanner, cache, days_from, leg)
         if score is None:
-            unresolved.append(leg.get("match", "?"))
+            # Ghost rule (bookmaker-style void): a leg still unsettled 7+ days
+            # after kickoff stops blocking its slip — void, never guessed.
+            if _leg_expired(leg, days=7):
+                try:
+                    db.update_leg_result(ticket_id, leg.get("match", ""), "void",
+                                         "unresolved 7d+ after kickoff — void")
+                except TypeError:
+                    db.update_leg_result(ticket_id, leg.get("match", ""), "void")
+                decided += 1
+                voided += 1
+            else:
+                unresolved.append(leg.get("match", "?"))
             continue
         try:
             try:
@@ -419,14 +431,30 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3, fallback_da
         if market_hit:
             correct += 1
     total = len(legs)
-    base = {"ticket_id": ticket_id, "correct": correct, "total": total,
+    live_total = total - voided  # void legs don't count for or against
+    base = {"ticket_id": ticket_id, "correct": correct, "total": live_total,
             "settle_sources": sources, "unresolved": unresolved[:8],
-            "skipped_future": skipped_future}
+            "skipped_future": skipped_future, "voided": voided}
     if decided < total:
         return {**base, "status": "pending"}
-    ticket_won = (correct == total and total > 0)
-    db.record_verification(ticket_id, ticket_won, correct, total, {})
+    ticket_won = (correct == live_total and live_total > 0)
+    db.record_verification(ticket_id, ticket_won, correct, live_total, {})
     return {**base, "status": "won" if ticket_won else "lost"}
+
+
+def _leg_expired(leg: dict, days: int = 7) -> bool:
+    """True when kickoff is known and `days`+ have passed. Missing time ->
+    False (never void what we can't date)."""
+    try:
+        ct = leg.get("commence_time", "") or ""
+        if not ct:
+            return False
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() > days * 86400
+    except Exception:
+        return False
 
 
 def _kickoff_future(ct: str) -> bool:
