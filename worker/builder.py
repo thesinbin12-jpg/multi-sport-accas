@@ -456,7 +456,9 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     if kind == "daily":
         value_cands = _pick_conservative(assessed)
         _ensure_diversity(value_cands, assessed)
-        dream_cands = _pick_dreamer(assessed, candidates)
+        # Dreamer fishes the FULL data-scored pool (diverse), not the 34-leg
+        # value-tilted candidate slice — longshots never survive that cut.
+        dream_cands = _pick_dreamer(assessed, diverse)
         try:
             if progress_cb:
                 progress_cb(f"Daily pair: {len(value_cands)} steady candidates, {len(dream_cands)} dreamer candidates.")
