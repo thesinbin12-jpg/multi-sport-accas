@@ -288,15 +288,46 @@ def build(req: BuildRequest, background: BackgroundTasks, request: Request):
 
 
 @app.post("/verify")
-def verify(request: Request):
+def verify(background: BackgroundTasks, request: Request):
+    """Async like /learn (Vercel kills long calls): runs in background,
+    watch public /status + last_verify for the summary."""
     if not _authed(request):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    with _state_lock:
+        if BUILD_STATE.get("status") == "running":
+            return {"ok": False, "error": "busy: " + str(BUILD_STATE.get("message", ""))}
+    _set_state(status="running", started_at=datetime.now(timezone.utc).isoformat(),
+               message="verify queued…", error=None)
+    background.add_task(_run_verify)
+    return {"ok": True, "message": "verify started"}
+
+
+def _run_verify():
     try:
-        import verifier
-        summary = verifier.verify_all_pending()
-        return {"ok": True, **summary}
+        try:
+            import verifier
+        except ImportError:
+            from worker import verifier  # type: ignore
+
+        def progress(msg: str):
+            _set_state(message=msg)
+            try:
+                import logging as _lg
+                _lg.getLogger("acca").info(str(msg)[:220])
+            except Exception:
+                pass
+
+        summary = verifier.verify_all_pending(progress_cb=progress)
+        with _state_lock:
+            BUILD_STATE.update(status="done", finished_at=datetime.now(timezone.utc).isoformat(),
+                               last_verify=summary,
+                               message=(f"verify: {summary.get('checked', 0)} checked, "
+                                        f"{summary.get('won', 0)} won, {summary.get('lost', 0)} lost, "
+                                        f"{summary.get('pending', 0)} still pending"))
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        _set_state(status="error", finished_at=datetime.now(timezone.utc).isoformat(),
+                   error=f"{e}\n{traceback.format_exc(limit=3)}",
+                   message=f"verify failed: {e}")
 
 
 @app.post("/learn")

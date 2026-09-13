@@ -262,7 +262,10 @@ def settle_parse(texts, home, away):
             before, after = low[max(0, s - 120):s], low[s:s + 120]
             if hl in before and al in after:
                 try:
-                    return int(m.group(1)), int(m.group(2))
+                    _hs, _as = int(m.group(1)), int(m.group(2))
+                    if _hs + _as > 11:
+                        continue  # cross-fixture pollution, never a real senior scoreline here
+                    return _hs, _as
                 except Exception:
                     continue
     return None

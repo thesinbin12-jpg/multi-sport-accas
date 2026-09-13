@@ -27,7 +27,7 @@ def _all_sport_keys() -> list:
     return keys
 
 
-def verify_all_pending(days_from: int = 3) -> dict:
+def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
     """Settle pending tickets via selection-aware verification. Returns summary.
     Stale undecided legs get free web context (Brave -> DDG, capped 5/run;
     Tavily only when free backends are empty)."""
@@ -40,7 +40,7 @@ def verify_all_pending(days_from: int = 3) -> dict:
     contexts: list = []
     src_tally: dict = {}
     unres_sample: list = []
-    for t in tickets:
+    for _i, t in enumerate(tickets):
         try:
             r = verify_ticket_with_selection(t["id"], days_from=days_from)
         except Exception:
@@ -64,6 +64,12 @@ def verify_all_pending(days_from: int = 3) -> dict:
             won += 1
         else:
             lost += 1
+        try:
+            if progress_cb:
+                progress_cb(f"Verify {_i + 1}/{len(tickets)}: {str(t.get('id', ''))[:26]} -> {r['status']} "
+                              f"({r.get('correct', '?')}/{r.get('total', '?')})")
+        except Exception:
+            pass
 
     stats = db.get_accuracy_stats()
     db.record_accuracy(stats["verified_tickets"], stats["won_tickets"], notes="auto verify")
@@ -458,7 +464,7 @@ def _fotmob_score(home: str, away: str, ref_date=None, span: int = 2):
         except ImportError:
             from worker.fotmob import _fm_day  # type: ignore
         from datetime import timedelta as _td, datetime as _dt, timezone as _tz
-        base = ref_date or _dt.now(_tz).date()
+        base = ref_date or _dt.now(_tz.utc).date()
         if isinstance(base, str):
             base = _dt.fromisoformat(base[:10]).date()
         hs, aws_ = _sig(home), _sig(away)

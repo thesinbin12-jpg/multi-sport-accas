@@ -63,7 +63,10 @@ SCHEMA_SQL = [
         result TEXT DEFAULT 'pending',
         analysis TEXT DEFAULT '',
         lost_why TEXT DEFAULT '',
-        market TEXT DEFAULT ''
+        market TEXT DEFAULT '',
+        commence_time TEXT DEFAULT '',
+        sport_key TEXT DEFAULT '',
+        bookmaker TEXT DEFAULT ''
     )
     """,
     """
@@ -133,6 +136,9 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS analysis TEXT DEFAULT ''")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS lost_why TEXT DEFAULT ''")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS market TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS commence_time TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS sport_key TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS bookmaker TEXT DEFAULT ''")
                 conn.commit()
             finally:
                 conn.close()
@@ -153,6 +159,12 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN lost_why TEXT DEFAULT ''")
             if "market" not in leg_cols:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN market TEXT DEFAULT ''")
+            if "commence_time" not in leg_cols:
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN commence_time TEXT DEFAULT ''")
+            if "sport_key" not in leg_cols:
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN sport_key TEXT DEFAULT ''")
+            if "bookmaker" not in leg_cols:
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN bookmaker TEXT DEFAULT ''")
             conn.commit()
 
 
@@ -180,12 +192,14 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
                 cur.execute("DELETE FROM acca_legs WHERE ticket_id = %s", (ticket_id,))
                 for leg in legs:
                     cur.execute(
-                        "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market, commence_time, sport_key, bookmaker) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (ticket_id, leg.get("sport", ""), leg.get("league", ""), leg.get("match", ""),
                          leg.get("selection", ""), float(leg.get("odds", 1.0)),
                          float(leg.get("probability", 0.0)), leg.get("result", "pending"),
-                         str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or "")),
+                         str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or ""),
+                         str(leg.get("commence_time", "") or ""), str(leg.get("sport_key", "") or ""),
+                         str(leg.get("bookmaker", "") or "")),
                     )
                 conn.commit()
             finally:
@@ -197,11 +211,13 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
                      (ticket_id, _now(), float(combined_odds), json.dumps(legs), status, kind, stake_json))
             _execute(cur, "DELETE FROM acca_legs WHERE ticket_id = %s", (ticket_id,))
             for leg in legs:
-                _execute(cur, "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                _execute(cur, "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market, commence_time, sport_key, bookmaker) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                          (ticket_id, leg.get("sport", ""), leg.get("league", ""), leg.get("match", ""),
                           leg.get("selection", ""), float(leg.get("odds", 1.0)),
                           float(leg.get("probability", 0.0)), leg.get("result", "pending"),
-                          str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or "")))
+                          str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or ""),
+                          str(leg.get("commence_time", "") or ""), str(leg.get("sport_key", "") or ""),
+                          str(leg.get("bookmaker", "") or "")))
             conn.commit()
 
 
