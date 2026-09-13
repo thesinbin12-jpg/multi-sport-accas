@@ -13,7 +13,10 @@ OR_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OR_BASE = "https://openrouter.ai/api/v1"
 NIM_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NIM_BASE = "https://integrate.api.nvidia.com/v1"
-NIM_MODELS = [m.strip() for m in os.environ.get("NIM_MODELS", "mistralai/mistral-nemotron,meta/muse-glimmer-30b,moonshotai/kimi-k3,nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b").split(",") if m.strip()]
+NIM_MODELS = [m.strip() for m in os.environ.get("NIM_MODELS", "mistralai/mistral-nemotron,meta/muse-glimmer-30b,moonshotai/kimi-k3,nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b,deepseek-ai/deepseek-v4-flash-0731").split(",") if m.strip()]
+# NOTE: deepseek-v4-flash is a reasoning model (needs big max_tokens, slower) ->
+# last in chain as extra fallback. deepseek-v4-pro hangs (150s timeout, no bytes)
+# -> deliberately NOT listed (2026-09-13).
 
 class AIRouter:
     def __init__(self):
@@ -85,6 +88,8 @@ class AIRouter:
     def call_nim(self, model, messages, max_tokens=1024, temperature=0.7):
         if not NIM_KEY:
             return None, "NIM_KEY not set"
+        if "deepseek" in str(model):
+            max_tokens = max(max_tokens, 2048)  # reasoning models think first; 1024 starves the answer
         try:
             r = requests.post(
                 f"{NIM_BASE}/chat/completions",
