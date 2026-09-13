@@ -256,7 +256,8 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                 _sr2("scores-fotmob", False, 0, str(e)[:150])
             except Exception:
                 pass
-    keys = _keys_for_leg(leg or {})
+    # Custom bookmaker/exchange keys have no Odds-API scores endpoint (was 2 wasted credits/leg).
+    keys = [k for k in _keys_for_leg(leg or {}) if k not in ("soccer_betika", "soccer_smarkets")]
     for sk in keys:
         if sk not in cache:
             try:
@@ -290,21 +291,39 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                 cache["_fd_matches"] = r.json().get("matches", []) if r.status_code == 200 else []
             except Exception:
                 cache["_fd_matches"] = []
-        for m in cache["_fd_matches"]:
-            try:
-                h = m.get("homeTeam", {}).get("name", "")
-                a = m.get("awayTeam", {}).get("name", "")
-                if _names_match(h, home) and _names_match(a, away):
+        try:
+            from teams import resolve_pair as _tres2, learn as _tlearn2
+        except ImportError:
+            from worker.teams import resolve_pair as _tres2, learn as _tlearn2  # type: ignore
+        _fms = cache["_fd_matches"] or []
+        try:
+            _pairs = [(str(m.get("homeTeam", {}).get("name", "")),
+                       str(m.get("awayTeam", {}).get("name", ""))) for m in _fms]
+            _bp, _sp = _tres2(home, away, _pairs)
+        except Exception:
+            _bp = None
+        if _bp:
+            for m in _fms:
+                try:
+                    h = str(m.get("homeTeam", {}).get("name", ""))
+                    a = str(m.get("awayTeam", {}).get("name", ""))
+                    if (h, a) != _bp:
+                        continue
                     ft = (m.get("score") or {}).get("fullTime", {}) or {}
                     hs, aws = _num(ft.get("home")), _num(ft.get("away"))
                     if hs is not None and aws is not None:
+                        try:
+                            _tlearn2(home, h)
+                            _tlearn2(away, a)
+                        except Exception:
+                            pass
                         try:
                             (leg or {}).__setitem__("_src", "fdo") if isinstance(leg, dict) else None
                         except Exception:
                             pass
                         return hs, aws
-            except Exception:
-                continue
+                except Exception:
+                    continue
     # Last resort: own search engine (metasearch + page fetch, free, capped per run).
     try:
         _wn = cache.get("_web_n", 0)
@@ -515,37 +534,42 @@ def _names_match(a: str, b: str) -> bool:
 
 
 def _fotmob_score(home: str, away: str, ref_date=None, span: int = 2):
-    """((hs, aws), fuzzy?) or None. Exact normalized-contains match wins;
-    else unique significant-token-pair resolution (handles 'OL Reign' vs
-    'Seattle Reign FC (w)'). Ambiguous (>1 pair sharing both keys same day)
-    returns None — never guesses a scoreline."""
+    """((hs, aws), fuzzy?) or None — resolved through the agentic teams layer
+    (every solved name is learned). Home and away resolve independently over
+    the day's pool and must land on the SAME fixture; ambiguous days are
+    skipped. Never guesses a scoreline."""
     try:
         try:
             from fotmob import _fm_day
         except ImportError:
             from worker.fotmob import _fm_day  # type: ignore
+        try:
+            from teams import resolve_pair as _tresolve, learn as _tlearn
+        except ImportError:
+            from worker.teams import resolve_pair as _tresolve, learn as _tlearn  # type: ignore
         from datetime import timedelta as _td, datetime as _dt, timezone as _tz
         base = ref_date or _dt.now(_tz.utc).date()
         if isinstance(base, str):
             base = _dt.fromisoformat(base[:10]).date()
-        hs, aws_ = _sig(home), _sig(away)
         for d in range(-span, 1):
             try:
                 pool = _fm_day(base + _td(days=d)) or {}
             except Exception:
                 continue
-            fuzzy = []
-            for (h, a), score in pool.items():
-                try:
-                    if _names_match(h, home) and _names_match(a, away):
-                        return score, False
-                    ph, pa = _sig(h), _sig(a)
-                    if ph and pa and hs and aws_ and (hs & ph) and (aws_ & pa):
-                        fuzzy.append(score)
-                except Exception:
-                    continue
-            if len(fuzzy) == 1:
-                return fuzzy[0], True
+            if not pool:
+                continue
+            try:
+                pair, ps = _tresolve(home, away, list(pool.keys()))
+            except Exception:
+                continue
+            if not pair or pair not in pool:
+                continue
+            try:
+                _tlearn(home, pair[0])
+                _tlearn(away, pair[1])
+            except Exception:
+                pass
+            return pool[pair], (ps < 0.95)
     except Exception:
         pass
     return None

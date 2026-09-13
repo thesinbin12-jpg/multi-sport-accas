@@ -18,11 +18,11 @@ except ImportError:
     from worker.ai_router import router  # type: ignore
 
 try:
-    from fotmob import league_odds_to_fotmob, get_fotmob
+    from fotmob import league_odds_to_fotmob, get_fotmob, fotmob_league_id, league_form, match_team
     _HAS_FOTMOB = True
 except ImportError:
     try:
-        from worker.fotmob import league_odds_to_fotmob, get_fotmob  # type: ignore
+        from worker.fotmob import league_odds_to_fotmob, get_fotmob, fotmob_league_id, league_form, match_team  # type: ignore
         _HAS_FOTMOB = True
     except ImportError:
         _HAS_FOTMOB = False
@@ -273,18 +273,21 @@ def _scan_filter() -> dict | None:
 
 
 def _enrich_with_fotmob(leg: dict) -> dict:
+    """Attach FotMob table form for both teams. League resolved by Odds API
+    sport_key first, then Betika-style league text (England Premier League
+    -> 47) so bookmaker legs get real form too. Cached per league."""
     if not _HAS_FOTMOB:
         return leg
     try:
-        lid = league_odds_to_fotmob(leg.get("sport_key", ""))
+        lid = league_odds_to_fotmob(leg.get("sport_key", "")) or fotmob_league_id(leg.get("league", ""))
         if not lid:
             return leg
-        fm = get_fotmob()
-        form = fm.extract_form_summary(lid)
-        if isinstance(form, dict) and form and "error" not in form:
+        form = league_form(lid)
+        if isinstance(form, dict) and form:
             for team_key in (leg.get("home_team", ""), leg.get("away_team", "")):
-                if team_key in form:
-                    leg.setdefault("form", {})[team_key] = form[team_key]
+                hit = match_team(form, team_key)
+                if hit:
+                    leg.setdefault("form", {})[team_key] = hit
     except Exception:
         pass
     return leg

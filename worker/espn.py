@@ -123,7 +123,7 @@ def find_score(home, away, league_hint="", ref_date=None, span=2, match_fn=None)
         return (h1 == h2 and a1 == a2) or (h1 in h2 and a1 in a2) or (h2 in h1 and a2 in a1)
     mf = match_fn or _default
     try:
-        base = ref_date or _dt.now(_tz).date()
+        base = ref_date or _dt.now(_tz.utc).date()
         if isinstance(base, str):
             base = _dt.fromisoformat(base[:10]).date()
         hn, an = str(home or "").strip().lower(), str(away or "").strip().lower()

@@ -140,6 +140,94 @@ def league_odds_to_fotmob(sport_key):
     return LEAGUE_IDS.get(sport_key)
 
 
+def team_form(home, away, days_back=30, limit=5):
+    """Recent form for two teams from finished FotMob results (~185 leagues).
+    The standings endpoint is dead; results don't lie. Returns
+    {query_name: {w,d,l,gp,gf,ga,form}} with form oldest->latest (W/D/L).
+    Days with no matches skipped. Cached day-pools make this cheap.
+    Never raises."""
+    out = {}
+    try:
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        try:
+            from teams import tags as _tseg, normalize as _tnorm
+        except ImportError:
+            from worker.teams import tags as _tseg, normalize as _tnorm  # type: ignore
+        base = _dt.now(_tz.utc).date()
+        pls = [(q, _tnorm(q)) for q in (home, away)]
+        recs = {nq: [] for _, nq in pls}
+        for back in range(0, max(1, int(days_back or 0))):
+            try:
+                pool = _fm_day(base - _td(days=back)) or {}
+            except Exception:
+                continue
+            if not pool:
+                continue
+            for orig, q in pls:
+                if not q:
+                    continue
+                try:
+                    for (h, a), score in pool.items():
+                        try:
+                            hs, aws = score
+                        except Exception:
+                            continue
+                        try:
+                            from teams import score as _tss
+                        except ImportError:
+                            from worker.teams import score as _tss  # type: ignore
+                        try:
+                            sh, sa = _tss(q, h), _tss(q, a)
+                        except Exception:
+                            continue
+                        if max(sh, sa) < 0.5:
+                            continue
+                        # same-day men's/women's duplicates: prefer our segment
+                        try:
+                            _mine_seg = _tseg(orig)
+                            _sides = [s for s, _sc in ((h, sh), (a, sa)) if _sc >= 0.5]
+                            _segged = [s for s in _sides if _tseg(s) == _mine_seg]
+                            if _segged and len(_sides) > len(_segged):
+                                if h in _segged and a in _segged:
+                                    pass
+                                elif h in _segged:
+                                    sa = 0.0
+                                elif a in _segged:
+                                    sh = 0.0
+                                else:
+                                    continue
+                        except Exception:
+                            pass
+                        try:
+                            if sh >= sa and sh >= 0.5:
+                                recs[q].append((int(hs), int(aws)))
+                            elif sa >= 0.5:
+                                recs[q].append((int(aws), int(hs)))
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+        for orig, q in pls:
+            try:
+                rs = list(reversed(recs[q][:limit]))
+                if not rs:
+                    continue
+                out[str(orig)] = {
+                    "w": sum(1 for gf, ga in rs if gf > ga),
+                    "d": sum(1 for gf, ga in rs if gf == ga),
+                    "l": sum(1 for gf, ga in rs if gf < ga),
+                    "gp": len(rs),
+                    "gf": sum(gf for gf, _ in rs),
+                    "ga": sum(ga for _, ga in rs),
+                    "form": "".join("W" if gf > ga else ("D" if gf == ga else "L") for gf, ga in rs),
+                }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 if __name__ == "__main__":
     f = FotMob()
     print("Testing FotMob...")
@@ -225,7 +313,7 @@ def find_finished_score(home, away, ref_date=None, span=2, match_fn=None):
         return (h1 == h2 and a1 == a2) or (h1 in h2 and a1 in a2) or (h2 in h1 and a2 in a1)
     mf = match_fn or _default
     try:
-        base = ref_date or _dt.now(_tz).date()
+        base = ref_date or _dt.now(_tz.utc).date()
         if isinstance(base, str):
             base = _dt.fromisoformat(base[:10]).date()
         hn = str(home or "").strip().lower()

@@ -653,6 +653,26 @@ def _parse_persona(text):
     return score, note
 
 
+def _fm_line(leg: dict) -> str:
+    """One-line FotMob recent-form for the brief (builder-attached). '' when absent."""
+    try:
+        fm = leg.get("form") or {}
+        if not isinstance(fm, dict) or not fm:
+            return ""
+        bits = []
+        for tm, st in fm.items():
+            try:
+                if isinstance(st, dict) and (st.get("gp") or 0) > 0:
+                    bits.append(f"{tm}: last {st.get('gp')} {st.get('w', 0)}W-{st.get('d', 0)}D-"
+                                f"{st.get('l', 0)}L (GF {st.get('gf', 0)}/GA {st.get('ga', 0)}), "
+                                f"form {st.get('form', '?')}")
+            except Exception:
+                continue
+        return "Recent form (FotMob results): " + (" | ".join(bits)[:450] if bits else "unavailable")
+    except Exception:
+        return ""
+
+
 def analyze_finalist(leg, progress_cb=None, history_struct=None):
     """Full swarm on ONE shortlisted leg. Returns (prob, why, analysis). Never raises.
     history_struct=(home_struct, away_struct) reuses scout-fetched FDO data."""
@@ -711,6 +731,7 @@ def analyze_finalist(leg, progress_cb=None, history_struct=None):
              f"Selection: {selection} @ {odds} (implied {base})\n"
              f"Data scout (pure-code models, no LLM): {(leg.get('_data') or (0, 0, ''))[2] if isinstance(leg.get('_data'), tuple) else ''}\n"
              f"{sim_text}\n"
+             f"{_fm_line(leg)}\n"
              f"{_learner_context(league)}\n"
              f"History: {history[:900]}\nNews: {news[:1200]}")
 

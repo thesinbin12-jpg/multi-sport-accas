@@ -71,6 +71,14 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS acca_team_aliases (
+        variant TEXT PRIMARY KEY,
+        canonical TEXT NOT NULL DEFAULT '',
+        hits INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS acca_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticket_id TEXT NOT NULL,
@@ -141,6 +149,7 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS sport_key TEXT DEFAULT ''")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS bookmaker TEXT DEFAULT ''")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS settle TEXT DEFAULT ''")
+                cur.execute("CREATE TABLE IF NOT EXISTS acca_team_aliases (variant TEXT PRIMARY KEY, canonical TEXT NOT NULL DEFAULT '', hits INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT '')")
                 conn.commit()
             finally:
                 conn.close()
@@ -169,6 +178,7 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN bookmaker TEXT DEFAULT ''")
             if "settle" not in leg_cols:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN settle TEXT DEFAULT ''")
+            cur.execute("CREATE TABLE IF NOT EXISTS acca_team_aliases (variant TEXT PRIMARY KEY, canonical TEXT DEFAULT '', hits INTEGER DEFAULT 1, updated_at TEXT DEFAULT '')")
             conn.commit()
 
 
@@ -352,6 +362,56 @@ def update_ticket_status(ticket_id: str, status: str) -> None:
             cur = conn.cursor()
             _execute(cur, "UPDATE acca_tickets SET status=%s WHERE id=%s", (status, ticket_id))
             conn.commit()
+
+
+def get_team_aliases() -> dict:
+    """{variant: canonical} learned name pairs. Never raises."""
+    try:
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT variant, canonical FROM acca_team_aliases")
+                    return {str(r[0]): str(r[1]) for r in cur.fetchall()}
+                finally:
+                    conn.close()
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT variant, canonical FROM acca_team_aliases")
+            return {str(r[0]): str(r[1]) for r in cur.fetchall()}
+    except Exception:
+        return {}
+
+
+def save_team_alias(canonical: str, variant: str) -> None:
+    """Persist one learned pair (upsert, bump hits). Never raises."""
+    try:
+        if not canonical or not variant:
+            return
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO acca_team_aliases (variant, canonical, hits, updated_at) "
+                                "VALUES (%s,%s,1,%s) ON CONFLICT (variant) DO UPDATE SET "
+                                "canonical=EXCLUDED.canonical, hits=acca_team_aliases.hits+1, updated_at=EXCLUDED.updated_at",
+                                (variant, canonical, _now()))
+                    conn.commit()
+                finally:
+                    conn.close()
+                return
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "INSERT INTO acca_team_aliases (variant, canonical, hits, updated_at) VALUES (%s,%s,1,%s) "
+                           "ON CONFLICT (variant) DO UPDATE SET canonical=excluded.canonical, hits=hits+1, updated_at=excluded.updated_at",
+                     (variant, canonical, _now()))
+            conn.commit()
+    except Exception:
+        pass
 
 
 def update_leg_result(ticket_id: str, match: str, result: str, settle: str = "") -> None:
