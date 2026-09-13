@@ -323,6 +323,7 @@ function Slip({ ticket, index, open, onToggle }) {
                   {leg.match || 'Fixture TBC'}{leg.league ? ` — ${leg.league}` : ''}
                   {leg.commence_time ? ` · ${new Date(leg.commence_time).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}
                   {leg.coverage === 'single-book' ? ' · only on some books' : ''}
+                  {leg.settle ? ` · ${leg.settle}` : ''}
                 </span>
               </div>
               <div className="leg-figures">

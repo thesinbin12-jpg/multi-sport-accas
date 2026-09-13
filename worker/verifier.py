@@ -37,17 +37,23 @@ def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
         return {"checked": 0, "won": 0, "lost": 0, "pending": 0}
 
     won = lost = still_pending = 0
+    skipped_future_all = 0
     contexts: list = []
     src_tally: dict = {}
     unres_sample: list = []
     for _i, t in enumerate(tickets):
         try:
-            r = verify_ticket_with_selection(t["id"], days_from=days_from)
+            r = verify_ticket_with_selection(t["id"], days_from=days_from,
+                                             fallback_date=t.get("created_at", "") or "")
         except Exception:
             still_pending += 1
             continue
         for k, v in (r.get("settle_sources") or {}).items():
             src_tally[k] = src_tally.get(k, 0) + v
+        try:
+            skipped_future_all += int(r.get("skipped_future", 0) or 0)
+        except Exception:
+            pass
         for m in (r.get("unresolved") or [])[:2]:
             if len(unres_sample) < 8 and m not in unres_sample:
                 unres_sample.append(m)
@@ -92,7 +98,8 @@ def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
     except Exception:
         pass
     out: dict = {"checked": won + lost, "won": won, "lost": lost, "pending": still_pending,
-                 "settle_sources": src_tally, "unresolved_sample": unres_sample}
+                 "settle_sources": src_tally, "unresolved_sample": unres_sample,
+                 "skipped_future": skipped_future_all}
     if contexts:
         out["contexts"] = contexts
     return out
@@ -328,16 +335,31 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
     return None
 
 
-def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
-    """Precise per-ticket verification using stored selection + scores."""
+def verify_ticket_with_selection(ticket_id: str, days_from: int = 3, fallback_date: str = "") -> dict:
+    """Precise per-ticket verification using stored selection + scores.
+    Slip-by-slip patience: legs whose kickoff is still in the future are
+    skipped untouched (revisited on the next learn); finished legs bank
+    their result immediately, but the TICKET only flips when every leg has
+    decided. fallback_date (ticket created_at) anchors old legs that were
+    saved without commence_time."""
     legs = db.get_legs(ticket_id)
     scanner = OddsScanner()
     cache: dict[str, list] = {}
     correct = 0
     decided = 0
+    skipped_future = 0
     sources: dict = {}
     unresolved: list = []
     for leg in legs:
+        try:
+            if not leg.get("commence_time") and fallback_date:
+                leg["commence_time"] = fallback_date  # in-memory anchor only
+        except Exception:
+            pass
+        if _kickoff_future(leg.get("commence_time", "")):
+            skipped_future += 1
+            unresolved.append(leg.get("match", "?"))
+            continue
         score = _resolve_score(leg.get("match", ""), scanner, cache, days_from, leg)
         if score is None:
             unresolved.append(leg.get("match", "?"))
@@ -366,17 +388,40 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3) -> dict:
             w = winner.lower()
             market_hit = (s == w) or (w in s) or (s in w)
         decided += 1
-        db.update_leg_result(ticket_id, leg.get("match", ""), "won" if market_hit else "lost")
+        _side = "won" if market_hit else "lost"
+        try:
+            _ev = f"FT {hs}-{aws} {str(leg.get('_src', '')) or 'scores'}"
+        except Exception:
+            _ev = ""
+        try:
+            db.update_leg_result(ticket_id, leg.get("match", ""), _side, _ev)
+        except TypeError:
+            db.update_leg_result(ticket_id, leg.get("match", ""), _side)
         if market_hit:
             correct += 1
     total = len(legs)
     base = {"ticket_id": ticket_id, "correct": correct, "total": total,
-            "settle_sources": sources, "unresolved": unresolved[:8]}
+            "settle_sources": sources, "unresolved": unresolved[:8],
+            "skipped_future": skipped_future}
     if decided < total:
         return {**base, "status": "pending"}
     ticket_won = (correct == total and total > 0)
     db.record_verification(ticket_id, ticket_won, correct, total, {})
     return {**base, "status": "won" if ticket_won else "lost"}
+
+
+def _kickoff_future(ct: str) -> bool:
+    """True only when a KNOWN kickoff is still ahead. Missing/unparseable ->
+    False (attempt resolution; sources stay silent on unplayed matches)."""
+    try:
+        if not ct:
+            return False
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt > datetime.now(timezone.utc)
+    except Exception:
+        return False
 
 
 def _keys_for_leg(leg: dict) -> list:

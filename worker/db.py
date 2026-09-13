@@ -66,7 +66,8 @@ SCHEMA_SQL = [
         market TEXT DEFAULT '',
         commence_time TEXT DEFAULT '',
         sport_key TEXT DEFAULT '',
-        bookmaker TEXT DEFAULT ''
+        bookmaker TEXT DEFAULT '',
+        settle TEXT DEFAULT ''
     )
     """,
     """
@@ -139,6 +140,7 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS commence_time TEXT DEFAULT ''")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS sport_key TEXT DEFAULT ''")
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS bookmaker TEXT DEFAULT ''")
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS settle TEXT DEFAULT ''")
                 conn.commit()
             finally:
                 conn.close()
@@ -165,6 +167,8 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN sport_key TEXT DEFAULT ''")
             if "bookmaker" not in leg_cols:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN bookmaker TEXT DEFAULT ''")
+            if "settle" not in leg_cols:
+                cur.execute("ALTER TABLE acca_legs ADD COLUMN settle TEXT DEFAULT ''")
             conn.commit()
 
 
@@ -283,7 +287,7 @@ def _hydrate_leg_results(conn, tickets: list, _pg: bool = False) -> None:
         if not ids:
             return
         ph = "%s" if _pg else "?"
-        q = f"SELECT ticket_id, match, result FROM acca_legs WHERE ticket_id IN ({','.join(ph for _ in ids)})"
+        q = f"SELECT ticket_id, match, result, settle FROM acca_legs WHERE ticket_id IN ({','.join(ph for _ in ids)})"
         if _pg:
             import psycopg2.extras  # type: ignore
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -296,15 +300,18 @@ def _hydrate_leg_results(conn, tickets: list, _pg: bool = False) -> None:
         live: dict = {}
         for r in rows:
             try:
-                live[(r.get("ticket_id"), str(r.get("match", "")))] = r.get("result") or "pending"
+                live[(r.get("ticket_id"), str(r.get("match", "")))] = (r.get("result") or "pending",
+                                                                          str(r.get("settle", "") or ""))
             except Exception:
                 continue
         for t in tickets:
             try:
                 for leg in (t.get("legs") or []):
-                    lr = live.get((t.get("id"), str(leg.get("match", ""))))
-                    if lr and lr != "pending":
-                        leg["result"] = lr
+                    lv = live.get((t.get("id"), str(leg.get("match", ""))))
+                    if lv and lv[0] != "pending":
+                        leg["result"] = lv[0]
+                        if lv[1]:
+                            leg["settle"] = lv[1]
             except Exception:
                 continue
     except Exception:
@@ -347,21 +354,29 @@ def update_ticket_status(ticket_id: str, status: str) -> None:
             conn.commit()
 
 
-def update_leg_result(ticket_id: str, match: str, result: str) -> None:
+def update_leg_result(ticket_id: str, match: str, result: str, settle: str = "") -> None:
     init_schema()
     with _lock:
         if _is_postgres():
             conn = _pg_conn()
             try:
                 cur = conn.cursor()
-                cur.execute("UPDATE acca_legs SET result=%s WHERE ticket_id=%s AND match=%s", (result, ticket_id, match))
+                try:
+                    cur.execute("UPDATE acca_legs SET result=%s, settle=%s WHERE ticket_id=%s AND match=%s",
+                                (result, str(settle or "")[:160], ticket_id, match))
+                except Exception:
+                    cur.execute("UPDATE acca_legs SET result=%s WHERE ticket_id=%s AND match=%s", (result, ticket_id, match))
                 conn.commit()
             finally:
                 conn.close()
         else:
             conn = _sqlite_conn()
             cur = conn.cursor()
-            _execute(cur, "UPDATE acca_legs SET result=%s WHERE ticket_id=%s AND match=%s", (result, ticket_id, match))
+            try:
+                _execute(cur, "UPDATE acca_legs SET result=%s, settle=%s WHERE ticket_id=%s AND match=%s",
+                         (result, str(settle or "")[:160], ticket_id, match))
+            except Exception:
+                _execute(cur, "UPDATE acca_legs SET result=%s WHERE ticket_id=%s AND match=%s", (result, ticket_id, match))
             conn.commit()
 
 
