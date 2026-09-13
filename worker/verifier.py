@@ -124,6 +124,8 @@ def _settle_leg(selection: str, hs: int, aws: int) -> bool | None:
     both = hs > 0 and aws > 0
     if sel.startswith("btts:"):
         return both if "yes" in sel else (not both)
+    if sel in ("yes", "no"):
+        return both if sel == "yes" else (not both)
     if sel in ("1x", "x2", "12"):
         return {"1x": hs >= aws, "x2": aws >= hs, "12": hs != aws}[sel]
     if "&" in sel:
@@ -190,32 +192,27 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
         _use_fm = True
     if _use_fm:
         try:
-            try:
-                from fotmob import find_finished_score
-            except ImportError:
-                from worker.fotmob import find_finished_score  # type: ignore
             ref = None
             try:
                 ct = (leg or {}).get("commence_time", "")
                 ref = datetime.fromisoformat(str(ct).replace("Z", "+00:00")).date() if ct else None
             except Exception:
                 ref = None
-            import re as _re3
-            _strip = lambda s: _re3.sub(r"\s*\([^)]*\)", "", str(s or "")).strip()
-            fm = find_finished_score(home, away, ref_date=ref,
-                                      match_fn=lambda h, a, hn, an: _names_match(_strip(h), hn) and _names_match(_strip(a), an))
+            fm = _fotmob_score(home, away, ref_date=ref)
             if fm:
+                score, _fuzzy = fm
                 try:
                     import logging as _lg
-                    _lg.getLogger("acca").info("settle %s via FotMob %s", match[:60], fm)
+                    _lg.getLogger("acca").info("settle %s via FotMob%s %s", match[:60],
+                                                  "-fuzzy" if _fuzzy else "", score)
                 except Exception:
                     pass
                 try:
                     if isinstance(leg, dict):
-                        leg["_src"] = "fotmob"
+                        leg["_src"] = "fotmob-fuzzy" if _fuzzy else "fotmob"
                 except Exception:
                     pass
-                return fm
+                return score
         except Exception as e:
             try:
                 import logging as _lg2
@@ -411,10 +408,80 @@ def _num(v):
         return None
 
 
+def _norm_name(s: str) -> str:
+    """Normalize a club name: fold accents (Atlético->Atletico), saint->st,
+    drop parentheticals, kill periods. Fixes real misses from user tickets."""
+    try:
+        import unicodedata as _ud
+        t = _ud.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode("ascii")
+        t = t.lower().strip()
+        t = __import__("re").sub(r"\s*\([^)]*\)", "", t)
+        t = t.replace(".", " ")
+        t = __import__("re").sub(r"\bsaint\b", "st", t)
+        return __import__("re").sub(r"\s+", " ", t).strip()
+    except Exception:
+        return str(s or "").lower().strip()
+
+
+_STOPWORDS = {"fc", "ac", "sc", "cf", "cd", "ud", "ss", "us", "as",
+              "fk", "sk", "bk", "ifk", "united", "city", "town", "rovers",
+              "wanderers", "athletic", "sporting", "real", "club", "de",
+              "del", "la", "le", "les", "al", "el", "das", "dos", "the",
+              "w", "women", "ladies", "ii", "iii", "iv", "u21", "u23",
+              "u19", "reserves", "reserve", "youth", "b"}
+
+
+def _sig(name: str) -> set:
+    """Significant tokens of a club name (stopwords dropped)."""
+    try:
+        return {w for w in __import__("re").split(r"[\s\-']+", _norm_name(name))
+                if w and w not in _STOPWORDS}
+    except Exception:
+        return set()
+
+
 def _names_match(a: str, b: str) -> bool:
-    """Fuzzy team-name match: either contains the other (handles 'Genoa CFC' vs 'Genoa')."""
-    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    """Fuzzy team-name match on NORMALIZED names (accents/saint/periods folded).
+    Either contains the other (handles 'Genoa CFC' vs 'Genoa')."""
+    a, b = _norm_name(a), _norm_name(b)
     return bool(a and b) and (a == b or a in b or b in a)
+
+
+def _fotmob_score(home: str, away: str, ref_date=None, span: int = 2):
+    """((hs, aws), fuzzy?) or None. Exact normalized-contains match wins;
+    else unique significant-token-pair resolution (handles 'OL Reign' vs
+    'Seattle Reign FC (w)'). Ambiguous (>1 pair sharing both keys same day)
+    returns None — never guesses a scoreline."""
+    try:
+        try:
+            from fotmob import _fm_day
+        except ImportError:
+            from worker.fotmob import _fm_day  # type: ignore
+        from datetime import timedelta as _td, datetime as _dt, timezone as _tz
+        base = ref_date or _dt.now(_tz).date()
+        if isinstance(base, str):
+            base = _dt.fromisoformat(base[:10]).date()
+        hs, aws_ = _sig(home), _sig(away)
+        for d in range(-span, 1):
+            try:
+                pool = _fm_day(base + _td(days=d)) or {}
+            except Exception:
+                continue
+            fuzzy = []
+            for (h, a), score in pool.items():
+                try:
+                    if _names_match(h, home) and _names_match(a, away):
+                        return score, False
+                    ph, pa = _sig(h), _sig(a)
+                    if ph and pa and hs and aws_ and (hs & ph) and (aws_ & pa):
+                        fuzzy.append(score)
+                except Exception:
+                    continue
+            if len(fuzzy) == 1:
+                return fuzzy[0], True
+    except Exception:
+        pass
+    return None
 
 
 def _football_data_winner(home: str, away: str, cache: dict, days_from: int):
