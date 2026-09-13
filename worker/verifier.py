@@ -279,23 +279,23 @@ def _resolve_score(match: str, scanner: OddsScanner, cache: dict, days_from: int
                         return hs, aws
             except Exception:
                 continue
-    # Last resort: web search (free backends only, capped per run).
+    # Last resort: own search engine (metasearch + page fetch, free, capped per run).
     try:
         _wn = cache.get("_web_n", 0)
         if _wn < 6:
             cache["_web_n"] = _wn + 1
             try:
-                from websearch import search as _wsearch, settle_parse as _sparse
+                from websearch import enriched_search as _wsearch, settle_parse as _sparse
             except ImportError:
                 _wsearch, _sparse = None, None
             if _wsearch is None:
                 try:
-                    from worker.websearch import search as _wsearch, settle_parse as _sparse  # type: ignore
+                    from worker.websearch import enriched_search as _wsearch, settle_parse as _sparse  # type: ignore
                 except ImportError:
                     _wsearch, _sparse = None, None
             if _wsearch is not None and _sparse is not None:
-                _res = _wsearch(f"{home} vs {away} full time result score", max_results=4)
-                _texts = [str(x.get("title", "")) + " " + str(x.get("snippet", "")) for x in _res]
+                _res = _wsearch(f"{home} vs {away} full time result score", max_results=4, fetch_top=1)
+                _texts = [str(x.get("title", "")) + " " + str(x.get("snippet", "")) + " " + str(x.get("page", "")) for x in _res]
                 _ws = _sparse(_texts, home, away)
                 if _ws:
                     try:
