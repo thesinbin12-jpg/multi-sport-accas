@@ -9,7 +9,7 @@ const isFresh = (t) => {
   }
 };
 const KINDS = [
-  { id: 'daily', label: 'Daily', blurb: 'Up to 20 legs, best value today. Settles fast.' },
+  { id: 'daily', label: 'Daily', blurb: 'Two slips per build: steady ~50x + dreamer. Settles fast.' },
   { id: 'weekly', label: 'Weekly', blurb: 'Up to 20 legs, bigger odds, settles over the week.' },
 ];
 
@@ -42,6 +42,10 @@ export default function Home() {
   const [workerDown, setWorkerDown] = useState(false);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('D-slip');
+  const [slipTab, setSlipTab] = useState('steady');
+  const isDream = (t) => (t.stake && t.stake.tier === 'dream') || String(t.id || '').startsWith('acca-dream-');
+  const steadyTickets = tickets.filter((t) => !isDream(t));
+  const dreamTickets = tickets.filter(isDream);
   const SLIP_TAB = kind === 'weekly' ? 'W-slip' : 'D-slip';
   const FILTERS = [SLIP_TAB, ...PENDING_TABS];
   const [openId, setOpenId] = useState(null);
@@ -127,7 +131,10 @@ export default function Home() {
     Won: tickets.filter((t) => t.status === 'won').length,
     Lost: tickets.filter((t) => t.status === 'lost').length,
   };
-  const visible = tickets.filter((t) =>
+  const slipPool = kind === 'daily' && filter === SLIP_TAB
+    ? (slipTab === 'dream' ? dreamTickets : steadyTickets)
+    : tickets;
+  const visible = slipPool.filter((t) =>
     filter === SLIP_TAB ? true : (t.status || 'pending') === filter.toLowerCase()
   );
   const fresh = visible.slice(0, 1);
@@ -180,7 +187,7 @@ export default function Home() {
                 role="tab"
                 aria-selected={kind === k.id}
                 className={kind === k.id ? 'kind kind-active' : 'kind'}
-                onClick={() => { setKind(k.id); setFilter(k.id === 'weekly' ? 'W-slip' : 'D-slip'); }}
+                onClick={() => { setKind(k.id); setFilter(k.id === 'weekly' ? 'W-slip' : 'D-slip'); setSlipTab('steady'); }}
               >
                 <span className="kind-label">{k.label}</span>
                 <span className="kind-blurb">{k.blurb}</span>
@@ -190,12 +197,14 @@ export default function Home() {
         </div>
         <div className="sheet-action">
           <button className="build" onClick={build} disabled={building || workerDown}>
-            {building ? 'Scanning odds…' : `File a ${kind} slip`}
+            {building ? 'Scanning odds…' : (kind === 'daily' ? 'File daily slips (steady + dreamer)' : `File a ${kind} slip`)}
           </button>
           <p className="sheet-note">
             {building
               ? status.message || 'Working…'
-              : `Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. Up to 20 legs — quality decides. ${activeKind.blurb}`}
+              : (kind === 'daily'
+                ? 'Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. One trigger files two slips: steady ~50x for value, dreamer for the miracle.'
+                : `Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. Up to 20 legs — quality decides. ${activeKind.blurb}`)}
           </p>
           {error && <p className="sheet-error">{error}</p>}
         </div>
@@ -212,6 +221,22 @@ export default function Home() {
           </button>
         ))}
       </nav>
+      {kind === 'daily' && filter === SLIP_TAB && (
+        <nav className="tabs" aria-label="Daily slip type">
+          <button
+            className={slipTab === 'steady' ? 'tab tab-active' : 'tab'}
+            onClick={() => setSlipTab('steady')}
+          >
+            Steady ~50x <span className="tab-count">{steadyTickets.length}</span>
+          </button>
+          <button
+            className={slipTab === 'dream' ? 'tab tab-active' : 'tab'}
+            onClick={() => setSlipTab('dream')}
+          >
+            Dreamer <span className="tab-count">{dreamTickets.length}</span>
+          </button>
+        </nav>
+      )}
 
       <main className="ledger">
         {loading && (
@@ -226,7 +251,7 @@ export default function Home() {
             <h3>{filter === SLIP_TAB ? `No ${kind} slip yet.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
             <p>
               {filter === SLIP_TAB
-                ? `File a ${kind} slip above. It will appear here with every leg priced.`
+                ? (kind === 'daily' ? 'File daily slips above — one trigger files both steady and dreamer.' : `File a ${kind} slip above. It will appear here with every leg priced.`)
                 : 'Try another filter, or file a fresh slip.'}
             </p>
           </div>

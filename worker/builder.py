@@ -448,94 +448,95 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         except Exception:
             prob = 0.0
         assessed.append((leg, prob, why))
-    # Phase 2: pick. Ceiling 20, never forced. Kind-aware floors: daily stays
-    # tight (first 6, extras prob>=0.5 + EV>=1.0); weekly dream tickets play
-    # volume (first 8, extras prob>=0.45 + EV>=0.95). Same-match guard always.
-    _base = 8 if kind == "weekly" else 6
-    _pfloor = 0.45 if kind == "weekly" else 0.5
-    _evfloor = 0.95 if kind == "weekly" else 1.0
-    ceiling = min(20, max(2, int(max_legs or 20)))
-    assessed.sort(key=lambda t: -t[1])
-    picked = []
-    for leg, prob, why in assessed:
-        if len(picked) >= ceiling:
-            break
-        if len(picked) >= _base:
-            try:
-                _o = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
-            except Exception:
-                _o = 0
-            if prob < _pfloor or prob * _o < _evfloor - 0.01:
-                continue
-        if any(_same_match(leg, p[0]) for p in picked):
-            continue
-        picked.append((leg, prob, why))
-    # Market diversity: span >= 2 markets when candidates allow (swap worst
-    # picked leg for the best unpicked leg of another market within 0.07 prob).
-    if len(picked) >= 2 and len({p[0].get("market") for p in picked}) < 2:
-        worst = min(picked, key=lambda t: t[1])
-        taken = {id(p[0]) for p in picked}
-        alt = None
+    # Phase 2: pick.
+    # Daily = TWO slips from one trigger: steady (~50x, best probs) +
+    # dreamer (high-odds longshots, own sourcing so it always files).
+    # Weekly = single volume ticket (first 8, extras prob>=0.45 + EV>=0.95).
+    # Same-match guard always (dreamer: 2 legs/fixture max instead).
+    if kind == "daily":
+        value_cands = _pick_conservative(assessed)
+        _ensure_diversity(value_cands, assessed)
+        dream_cands = _pick_dreamer(assessed, candidates)
+        try:
+            if progress_cb:
+                progress_cb(f"Daily pair: {len(value_cands)} steady candidates, {len(dream_cands)} dreamer candidates.")
+        except Exception:
+            pass
+        picked = []
+    else:
+        value_cands, dream_cands = [], []
+        _base, _pfloor, _evfloor = 8, 0.45, 0.95
+        ceiling = min(20, max(2, int(max_legs or 20)))
+        assessed.sort(key=lambda t: -t[1])
+        picked = []
         for leg, prob, why in assessed:
-            if id(leg) in taken:
+            if len(picked) >= ceiling:
+                break
+            if len(picked) >= _base:
+                try:
+                    _o = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
+                except Exception:
+                    _o = 0
+                if prob < _pfloor or prob * _o < _evfloor - 0.01:
+                    continue
+            if any(_same_match(leg, p[0]) for p in picked):
                 continue
-            if leg.get("market") == worst[0].get("market"):
-                continue
-            if prob < worst[1] - 0.07:
-                continue
-            if any(_same_match(leg, p[0]) for p in picked if p is not worst):
-                continue
-            alt = (leg, prob, why)
-            break
-        if alt:
-            picked = [p for p in picked if p is not worst] + [alt]
-    built = []
-    for leg, prob, why in picked:
-        # selection = scout pick (band-checked live; prices move, never force).
-        outcomes = leg.get("outcomes", []) or []
-        if not outcomes:
+            picked.append((leg, prob, why))
+        _ensure_diversity(picked, assessed)
+    if kind == "daily":
+        # TWO-SLIP DAILY: steady (~50x) + dreamer (high odds). Same trigger,
+        # same pool, two tickets. prune_pending(keep=2) keeps the newest pair.
+        tickets: list = []
+        v_built = _trim_to_target(_materialize(value_cands), target=50.0)
+        v_comb = 0.0
+        if len(v_built) >= 2:
+            stake_v = _agentic_stake(v_built, kind, use_ai, progress_cb=progress_cb)
             try:
-                outcomes = []
-                for _bm in leg.get("bookmakers", []) or []:
-                    for _mk in (_bm.get("markets", []) or []):
-                        outcomes += (_mk.get("outcomes", []) or [])
+                stake_v["tier"] = "value"
             except Exception:
-                outcomes = []
-        pick = str(leg.get("_pick") or "").lower()
-        sel_out = _find_outcome(leg, pick) if pick else None
-        if sel_out is None and pick:
-            continue  # pick vanished from the book (price moved) — never fabricate
-        if sel_out is not None:
-            try:
-                oprice = float(sel_out.get("price", 0))
-            except Exception:
-                oprice = 0
-            if 1.5 <= oprice <= 7.0:
-                selection, odds = sel_out.get("name"), oprice
-            else:
-                continue
-        elif outcomes:
-            fav = min(outcomes, key=lambda o: float(o.get("price", 999)))
-            selection, odds = fav.get("name", leg.get("home_team")), float(fav.get("price", leg.get("best_odds", 2.0)))
-        else:
-            selection, odds = leg.get("home_team", "?"), float(leg.get("best_odds", 2.0))
-        built.append({
-            "sport": leg.get("sport", leg.get("sport_key", "")),
-            "sport_key": leg.get("sport_key", ""),
-            "league": leg.get("league", ""),
-            "market": leg.get("market", "1X2"),
-            "match": f"{leg.get('home_team','?')} vs {leg.get('away_team','?')}",
-            "selection": selection,
-            "odds": round(odds, 3),
-            "probability": prob,
-            "result": "pending",
-            "reason": why,
-            "analysis": leg.get("analysis", ""),
-            "commence_time": leg.get("commence_time", ""),
-            "bookmaker": leg.get("best_bookmaker", ""),
-            "coverage": ("wide" if int(leg.get("_coverage", 1) or 1) > 1 else "single-book"),
-        })
-
+                pass
+            v_comb = round(math.prod(max(float(b["odds"]), 1.01) for b in v_built), 3)
+            _now = datetime.now(timezone.utc)
+            tickets.append({
+                "id": f"acca-daily-{_now.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
+                "created_at": _now.isoformat(),
+                "combined_odds": v_comb,
+                "legs": v_built,
+                "status": "pending",
+                "kind": "daily",
+                "stake": stake_v,
+            })
+        d_built = _materialize(dream_cands, band_lo=2.5, band_hi=7.0, fallback="closest")
+        d_comb = 0.0
+        if len(d_built) >= 3:
+            d_comb = round(math.prod(max(float(b["odds"]), 1.01) for b in d_built), 3)
+            _joint = 1.0
+            for b in d_built:
+                _joint *= max(min(float(b["probability"]), 0.99), 0.01)
+            _now2 = datetime.now(timezone.utc)
+            tickets.append({
+                "id": f"acca-dream-{_now2.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
+                "created_at": _now2.isoformat(),
+                "combined_odds": d_comb,
+                "legs": d_built,
+                "status": "pending",
+                "kind": "daily",
+                "stake": {"units": 0.5, "confidence": round(_joint, 4),
+                           "note": "Dreamer — tiny stake, huge payout. Joint hit chance shown honestly.",
+                           "llm": False, "tier": "dream", "combined_odds": d_comb},
+            })
+        try:
+            if progress_cb:
+                if v_built and len(v_built) >= 2 and len(d_built) >= 3:
+                    progress_cb(f"Filed pair: steady {v_comb}x ({len(v_built)} legs) + dreamer {d_comb}x ({len(d_built)} legs).")
+                elif v_built and len(v_built) >= 2:
+                    progress_cb(f"Filed steady {v_comb}x ({len(v_built)} legs); no dreamer (<3 longshots in pool).")
+                else:
+                    progress_cb("Nothing filed: pool too thin for a steady ticket.")
+        except Exception:
+            pass
+        return tickets
+    built = _materialize(picked)
     if not built:
         return []
 
@@ -553,99 +554,203 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         "stake": stake,
     }
     tickets = [ticket]
-    # Dream slip (daily only): high-odds value legs from the same debated pool.
-    # Targets 10,000x+ (4-8 legs @ 2.5-7.0, prob>=0.22 + EV>=1.0 so pure-implied
-    # longshots still qualify on value). Tiny fixed stake, joint probability
-    # shown honestly. Never forced: needs >=3 qualifiers.
-    if kind == "daily":
-        dream_cands = []
-        for leg, prob, why in assessed:
+    return tickets
+
+
+def _materialize(picked: list, band_lo: float = 1.5, band_hi: float = 7.0, fallback: str = "fav") -> list:
+    """Turn (leg, prob, why) picks into priced built legs.
+    Selection = scout pick, band-checked against the LIVE price; legs whose
+    pick vanished or priced out of band are dropped (never fabricated).
+    fallback 'fav' (steady tickets): no stored pick -> favourite outcome.
+    fallback 'closest' (dreamer): pick vanished -> nearest-price outcome.
+    The band check applies to fallbacks too (fav=min-price bug fix)."""
+    built = []
+    for leg, prob, why in picked:
+        outcomes = leg.get("outcomes", []) or []
+        if not outcomes:
             try:
-                _dp = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
+                outcomes = []
+                for _bm in leg.get("bookmakers", []) or []:
+                    for _mk in (_bm.get("markets", []) or []):
+                        outcomes += (_mk.get("outcomes", []) or [])
             except Exception:
-                _dp = 0
+                outcomes = []
+        pick = str(leg.get("_pick") or "").lower()
+        sel_out = _find_outcome(leg, pick) if pick else None
+        if sel_out is None and pick and fallback == "closest":
             try:
-                _pr = float(prob)
+                _ref = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
             except Exception:
-                _pr = 0
-            if 2.5 <= _dp <= 7.0 and _pr >= 0.22 and _pr * _dp >= 0.99:
-                dream_cands.append((leg, _pr, why, _dp))
-        dream_cands.sort(key=lambda t: -(t[1] * t[3]))
-        _dpicked, _dcomb = [], 1.0
-        _dfix: dict = {}
-        for leg, _pr, why, _dp in dream_cands:
-            if len(_dpicked) >= 8:
-                break
+                _ref = 0
+            sel_out = _closest_outcome(leg, _ref) if _ref else None
+        if sel_out is None and pick:
+            continue  # pick vanished from the book (price moved) — never fabricate
+        if sel_out is not None:
             try:
-                _fk = (_norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", "")))
+                oprice = float(sel_out.get("price", 0))
             except Exception:
-                _fk = str(len(_dpicked))
-            if _dfix.get(_fk, 0) >= 2:
+                oprice = 0
+            if band_lo - 1e-9 <= oprice <= band_hi + 1e-9:
+                selection, odds = sel_out.get("name"), oprice
+            else:
                 continue
-            _dpicked.append((leg, _pr, why, _dp))
-            _dfix[_fk] = _dfix.get(_fk, 0) + 1
-            _dcomb *= max(_dp, 1.01)
-            if _dcomb >= 10000 and len(_dpicked) >= 4:
+        elif outcomes and fallback == "fav":
+            fav = min(outcomes, key=lambda o: float(o.get("price", 999)))
+            try:
+                _fp = float(fav.get("price", 0))
+            except Exception:
+                _fp = 0
+            if not (band_lo - 1e-9 <= _fp <= band_hi + 1e-9):
+                continue
+            selection, odds = fav.get("name", leg.get("home_team")), _fp
+        elif outcomes:
+            continue
+        else:
+            try:
+                _bo = float(leg.get("best_odds", 0))
+            except Exception:
+                _bo = 0
+            if not (band_lo - 1e-9 <= _bo <= band_hi + 1e-9):
+                continue
+            selection, odds = leg.get("home_team", "?"), _bo
+        built.append({
+            "sport": leg.get("sport", leg.get("sport_key", "")),
+            "sport_key": leg.get("sport_key", ""),
+            "league": leg.get("league", ""),
+            "market": leg.get("market", "1X2"),
+            "match": f"{leg.get('home_team','?')} vs {leg.get('away_team','?')}",
+            "selection": selection,
+            "odds": round(odds, 3),
+            "probability": prob,
+            "result": "pending",
+            "reason": why,
+            "analysis": leg.get("analysis", ""),
+            "commence_time": leg.get("commence_time", ""),
+            "bookmaker": leg.get("best_bookmaker", ""),
+            "coverage": ("wide" if int(leg.get("_coverage", 1) or 1) > 1 else "single-book"),
+        })
+    return built
+
+
+def _ensure_diversity(picked: list, pool: list) -> None:
+    """Span >= 2 markets when candidates allow (swap worst picked leg for the
+    best unpicked leg of another market within 0.07 prob). Mutates picked."""
+    try:
+        if len(picked) >= 2 and len({p[0].get("market") for p in picked}) < 2:
+            worst = min(picked, key=lambda t: t[1])
+            taken = {id(p[0]) for p in picked}
+            alt = None
+            for leg, prob, why in pool:
+                if id(leg) in taken:
+                    continue
+                if leg.get("market") == worst[0].get("market"):
+                    continue
+                if prob < worst[1] - 0.07:
+                    continue
+                if any(_same_match(leg, p[0]) for p in picked if p is not worst):
+                    continue
+                alt = (leg, prob, why)
                 break
+            if alt:
+                picked.remove(worst)
+                picked.append(alt)
+    except Exception:
+        pass
+
+
+def _pick_conservative(assessed: list, cap: int = 10) -> list:
+    """Steady D-slip candidates: best probability first. Trim to ~50x happens
+    after live pricing (see _trim_to_target). Legs past the 6th need
+    prob>=0.45 + EV>=0.95 so the tail never dilutes the ticket."""
+    pool = sorted(assessed, key=lambda t: -(float(t[1] or 0.0)))
+    picks = []
+    for leg, prob, why in pool:
+        if len(picks) >= cap:
+            break
         try:
-            if progress_cb:
-                progress_cb(f"Dream: {len(dream_cands)} qualifiers, {len(_dpicked)} picked from {len(assessed)} assessed.")
+            _o = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
+            _pr = float(prob or 0.0)
+        except Exception:
+            _o, _pr = 0.0, 0.0
+        if len(picks) >= 6 and (_pr < 0.45 or _pr * _o < 0.94):
+            continue
+        if any(_same_match(leg, p[0]) for p in picks):
+            continue
+        picks.append((leg, prob, why))
+    return picks
+
+
+def _trim_to_target(built: list, target: float = 50.0, min_legs: int = 4, max_legs: int = 8) -> list:
+    """Keep best-prob legs until combined reaches ~target (stops at target-5
+    once min_legs held). Never forces: thin pools keep what they have."""
+    ordered = sorted(built, key=lambda b: -(float(b.get("probability") or 0.0)))
+    kept, comb = [], 1.0
+    for b in ordered:
+        if len(kept) >= max_legs:
+            break
+        if len(kept) >= min_legs and comb >= target - 5.0:
+            break
+        kept.append(b)
+        try:
+            comb *= max(float(b.get("odds") or 1.01), 1.01)
         except Exception:
             pass
-        if len(_dpicked) >= 3:
-            _dlegs = []
-            for leg, _pr, why, _dp in _dpicked:
+    return kept
+
+
+def _pick_dreamer(assessed: list, candidates: list) -> list:
+    """Dreamer longshot picks with OWN sourcing (never starves on swarm
+    leftovers): best-known prob per leg (swarm > data model > implied),
+    odds band 2.5-7.0, prob>=0.10. Ranked by EV, up to 8 legs (2/fixture),
+    stops at 10000x with >=4. Needs >=3 to file."""
+    aprobs: dict = {}
+    for leg, prob, why in assessed:
+        try:
+            aprobs[id(leg)] = (float(prob or 0.0), why)
+        except Exception:
+            pass
+    cands = []
+    for leg in candidates:
+        if id(leg) in aprobs:
+            pr, why = aprobs[id(leg)]
+        else:
+            why = ""
+            try:
                 _pk = str(leg.get("_pick") or "").lower()
-                _so = _find_outcome(leg, _pk) if _pk else None
-                if _so is None:
-                    _so = _closest_outcome(leg, _dp)
-                if _so is not None:
-                    try:
-                        _op = float(_so.get("price", 0))
-                    except Exception:
-                        _op = 0
-                    if 2.5 <= _op <= 7.0:
-                        _sel, _od = _so.get("name"), _op
-                    else:
-                        continue
-                else:
-                    continue
-                _dlegs.append({
-                    "sport": leg.get("sport", leg.get("sport_key", "")),
-                    "sport_key": leg.get("sport_key", ""),
-                    "league": leg.get("league", ""),
-                    "market": leg.get("market", "1X2"),
-                    "match": f"{leg.get('home_team','?')} vs {leg.get('away_team','?')}",
-                    "selection": _sel, "odds": round(_od, 3),
-                    "probability": round(_pr, 4), "result": "pending",
-                    "reason": why, "analysis": leg.get("analysis", ""),
-                    "commence_time": leg.get("commence_time", ""),
-                    "bookmaker": leg.get("best_bookmaker", ""),
-                    "coverage": ("wide" if int(leg.get("_coverage", 1) or 1) > 1 else "single-book"),
-                })
-            if len(_dlegs) >= 3:
-                _dcomb = round(math.prod(max(float(b["odds"]), 1.01) for b in _dlegs), 3)
-                _joint = 1.0
-                for b in _dlegs:
-                    _joint *= max(min(float(b["probability"]), 0.99), 0.01)
-                _now2 = datetime.now(timezone.utc)
-                dream = {
-                    "id": f"acca-dream-{_now2.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}",
-                    "created_at": _now2.isoformat(),
-                    "combined_odds": _dcomb,
-                    "legs": _dlegs,
-                    "status": "pending",
-                    "kind": kind,
-                    "stake": {"units": 0.5, "confidence": round(_joint, 4),
-                               "note": "Dream slip — tiny stake, huge payout. Joint hit chance shown honestly.",
-                               "llm": False, "tier": "dream", "combined_odds": _dcomb},
-                }
+                _pd = (leg.get("_picks") or {}).get(_pk) if _pk else None
+                pr = float(_pd[0]) if _pd else 0.0
+                why = str(_pd[3])[:160] if _pd and len(_pd) > 3 else ""
+            except Exception:
+                pr = 0.0
+            if not pr:
                 try:
-                    stake["tier"] = "value"
+                    pr = 1.0 / max(float(leg.get("_sel_price") or leg.get("best_odds") or 7.0), 1.01)
                 except Exception:
-                    pass
-                tickets = [dream, ticket]
-    return tickets
+                    pr = 0.0
+                why = why or f"implied {round(pr, 3)} (undebated longshot)"
+        try:
+            _dp = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
+        except Exception:
+            _dp = 0
+        if 2.5 <= _dp <= 7.0 and pr >= 0.10:
+            cands.append((leg, pr, why, _dp))
+    cands.sort(key=lambda t: (-(t[1] * t[3]), -t[3]))
+    picks, comb, fix = [], 1.0, {}
+    for leg, pr, why, dp in cands:
+        if len(picks) >= 8:
+            break
+        try:
+            fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
+        except Exception:
+            fk = str(len(picks))
+        if fix.get(fk, 0) >= 2:
+            continue
+        picks.append((leg, pr, why))
+        fix[fk] = fix.get(fk, 0) + 1
+        comb *= max(dp, 1.01)
+        if comb >= 10000 and len(picks) >= 4:
+            break
+    return picks
 
 
 RANK_SYSTEM = (
