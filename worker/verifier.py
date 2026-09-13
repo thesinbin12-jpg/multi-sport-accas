@@ -646,25 +646,31 @@ def _fotmob_score(home: str, away: str, ref_date=None, span: int = 2):
         base = ref_date or _dt.now(_tz.utc).date()
         if isinstance(base, str):
             base = _dt.fromisoformat(base[:10]).date()
-        for d in range(-span, 1):
-            try:
-                pool = _fm_day(base + _td(days=d)) or {}
-            except Exception:
-                continue
-            if not pool:
-                continue
-            try:
-                pair, ps = _tresolve(home, away, list(pool.keys()))
-            except Exception:
-                continue
-            if not pair or pair not in pool:
-                continue
-            try:
-                _tlearn(home, pair[0])
-                _tlearn(away, pair[1])
-            except Exception:
-                pass
-            return pool[pair], (ps < 0.95)
+        today = _dt.now(_tz.utc).date()
+        # Two anchors: the leg's own date first (exact window), then today
+        # (old legs saved without commence_time fall back to ticket-created,
+        # but their matches play days AFTER the build — today catches those).
+        bases = [base] + ([today] if today != base else [])
+        for _base in bases:
+            for d in range(-span, 1):
+                try:
+                    pool = _fm_day(_base + _td(days=d)) or {}
+                except Exception:
+                    continue
+                if not pool:
+                    continue
+                try:
+                    pair, ps = _tresolve(home, away, list(pool.keys()))
+                except Exception:
+                    continue
+                if not pair or pair not in pool:
+                    continue
+                try:
+                    _tlearn(home, pair[0])
+                    _tlearn(away, pair[1])
+                except Exception:
+                    pass
+                return pool[pair], (ps < 0.95)
     except Exception:
         pass
     return None
