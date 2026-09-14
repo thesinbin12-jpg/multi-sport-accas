@@ -27,6 +27,90 @@ def _all_sport_keys() -> list:
     return keys
 
 
+def record_clv_snapshot(progress_cb=None) -> dict:
+    """Closing-line-value snapshot: one free Betika scan; for pending legs
+    kicking off within 36h, compare filed odds vs the current same
+    match/market/selection price. Filed > late = beating the close (+edge).
+    Saves rows via db.save_clv. Never raises."""
+    out = {"checked": 0, "recorded": 0}
+    try:
+        try:
+            from betika_odds import scan_betika as _scan
+        except ImportError:
+            from worker.betika_odds import scan_betika as _scan  # type: ignore
+        try:
+            import teams as _tm
+        except ImportError:
+            import worker.teams as _tm  # type: ignore
+        now = datetime.now(timezone.utc)
+        scanned = _scan(hours_ahead=36) or []
+        if not scanned:
+            return out
+        pairs = [f"{m.get('home_team', '')} vs {m.get('away_team', '')}" for m in scanned]
+        tickets = [t for t in db.get_tickets(limit=50) if t.get("status") == "pending"]
+        for t in tickets:
+            try:
+                legs = db.get_legs(t["id"])
+            except Exception:
+                continue
+            for leg in legs:
+                try:
+                    if (leg.get("result") or "pending") != "pending":
+                        continue
+                    ct = str(leg.get("commence_time", "") or "")
+                    if not ct:
+                        continue
+                    dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if not (now < dt <= now + timedelta(hours=36)):
+                        continue
+                    m = str(leg.get("match", "") or "")
+                    if " vs " not in m:
+                        continue
+                    h, a = m.split(" vs ", 1)
+                    hit = _tm.resolve_pair(h, a, pairs)
+                    if not hit or hit not in pairs:
+                        continue
+                    sm = scanned[pairs.index(hit)]
+                    want_mkt = str(leg.get("market", "")).lower()
+                    want_sel = str(leg.get("selection", "")).lower()
+                    # market family must match: Home Total Over 1.5 != O/U Over 1.5
+                    if str(sm.get("market", "")).lower() != want_mkt:
+                        continue
+                    price = None
+                    for _bm in sm.get("bookmakers", []) or []:
+                        for _mk in (_bm.get("markets", []) or []):
+                            for _o in (_mk.get("outcomes", []) or []):
+                                if str(_o.get("name", "")).lower() == want_sel:
+                                    # same-match guard: market family must match too
+                                    price = float(_o.get("price", 0) or 0)
+                                    break
+                            if price:
+                                break
+                        if price:
+                            break
+                    if not price:
+                        continue
+                    out["checked"] += 1
+                    try:
+                        db.save_clv(t["id"], m, leg.get("market", ""), leg.get("selection", ""),
+                                  float(leg.get("odds", 0) or 0), price)
+                        out["recorded"] += 1
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+        if progress_cb and out["recorded"]:
+            try:
+                progress_cb(f"CLV: {out['recorded']} late-price snapshots recorded.")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
 def verify_all_pending(days_from: int = 3, progress_cb=None) -> dict:
     """Settle pending tickets via selection-aware verification. Returns summary.
     Stale undecided legs get free web context (Brave -> DDG, capped 5/run;
@@ -208,12 +292,34 @@ def _check_leg_result(match: str, scanner: OddsScanner, cache: dict, days_from: 
     return "pending"
 
 
-def _settle_leg(selection: str, hs: int, aws: int) -> bool | None:
-    """Market-aware settle from a full-time score. True=won, False=lost, None=unknown."""
+def _settle_leg(selection: str, hs: int, aws: int, market: str = "") -> bool | str | None:
+    """Market-aware settle from a full-time score. True=won, False=lost,
+    'void'=push (DNB draw), None=unknown."""
     sel = str(selection or "").strip().lower()
+    mkt = str(market or "").strip().lower()
     total = hs + aws
     home_win, draw, away_win = hs > aws, hs == aws, aws > hs
     both = hs > 0 and aws > 0
+    if mkt in ("home total", "away total"):
+        import re as _re4
+        g = hs if mkt == "home total" else aws
+        mt = _re4.match(r"(over|under)\s+(\d+(?:\.\d+)?)", sel)
+        if not mt:
+            return None
+        try:
+            line = float(mt.group(2))
+        except Exception:
+            return None
+        return g > line if mt.group(1) == "over" else g < line
+    if sel.startswith("dnb:"):
+        code = sel.split(":", 1)[1].strip()
+        if draw:
+            return "void"
+        if code == "1":
+            return home_win
+        if code == "2":
+            return away_win
+        return None
     if sel.startswith("btts:"):
         return both if "yes" in sel else (not both)
     if sel in ("yes", "no"):
@@ -473,7 +579,17 @@ def verify_ticket_with_selection(ticket_id: str, days_from: int = 3, fallback_da
         sources[leg.get("_src", "unknown")] = sources.get(leg.get("_src", "unknown"), 0) + 1
         hs, aws = score
         sel = str(leg.get("selection", ""))
-        market_hit = _settle_leg(sel, hs, aws)
+        market_hit = _settle_leg(sel, hs, aws, leg.get("market", ""))
+        if market_hit == "void":
+            # DNB push (draw): stake back, leg counts for neither side.
+            try:
+                db.update_leg_result(ticket_id, leg.get("match", ""), "void",
+                                     f"DNB push FT {hs}-{aws}")
+            except TypeError:
+                db.update_leg_result(ticket_id, leg.get("match", ""), "void")
+            decided += 1
+            voided += 1
+            continue
         if market_hit is None:
             # 1X2: compare selection to winner
             if hs > aws:

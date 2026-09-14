@@ -29,6 +29,9 @@ SUB_OU = "18"
 SUB_C12B = "35"
 SUB_COUB = "36"
 SUB_C12OU = "37"
+SUB_DNB = "11"  # draw no bet (lowest-margin 1X2 substitute; draw = void)
+SUB_HTOT = "19"  # home team total (over/under lines)
+SUB_ATOT = "20"  # away team total (over/under lines)
 
 
 def _combo_token(tok):
@@ -111,6 +114,16 @@ class BetikaOdds:
                 elif sub == SUB_BTTS and disp.lower() in ("yes", "no"):
                     yn = "Yes" if disp.lower() == "yes" else "No"
                     groups.setdefault("btts", []).append({"name": f"BTTS: {yn}", "price": val})
+                elif sub == SUB_DNB and disp in ("1", "2"):
+                    groups.setdefault("dnb", []).append({"name": "DNB:" + disp, "price": val})
+                elif sub in (SUB_HTOT, SUB_ATOT):
+                    import re as _re2
+                    mt2 = _re2.match(r"(OVER|UNDER)\s+(\d+(?:\.\d+)?)", disp.upper())
+                    if mt2:
+                        _key = "hometotal" if sub == SUB_HTOT else "awaytotal"
+                        groups.setdefault(_key, []).append(
+                            {"name": f"{'Over' if mt2.group(1) == 'OVER' else 'Under'} {mt2.group(2)}",
+                             "price": val})
                 elif sub == SUB_OU:
                     import re as _re
                     mt = _re.match(r"(OVER|UNDER)\s+(1\.5|2\.5|3\.5)", disp.upper())
@@ -127,7 +140,7 @@ class BetikaOdds:
                             {"name": "&".join(toks), "price": val})
         return groups
 
-    def scan(self, hours_ahead=48, markets=("1X2", "DC", "BTTS", "O/U", "COMBO"), callback=None):
+    def scan(self, hours_ahead=48, markets=("1X2", "DC", "BTTS", "O/U", "COMBO", "DNB", "TTOTAL"), callback=None):
         """Returns [shaped events]. Zero quota cost."""
         out, seen = [], set()
         now = datetime.now(timezone.utc)
@@ -144,9 +157,14 @@ class BetikaOdds:
             subs.append(SUB_OU)
         if "COMBO" in want:
             subs.extend([SUB_C12B, SUB_COUB, SUB_C12OU])
+        if "DNB" in want:
+            subs.append(SUB_DNB)
+        if "TTOTAL" in want:
+            subs.extend([SUB_HTOT, SUB_ATOT])
         labels = {"1x2": "1X2", "dc": "Double chance", "btts": "BTTS",
                   "ou1.5": "O/U 1.5", "ou2.5": "O/U 2.5", "ou3.5": "O/U 3.5",
-                  "1X2+BTTS": "1X2+BTTS", "O/U+BTTS": "O/U+BTTS", "1X2+O/U": "1X2+O/U"}
+                  "1X2+BTTS": "1X2+BTTS", "O/U+BTTS": "O/U+BTTS", "1X2+O/U": "1X2+O/U",
+                  "dnb": "DNB", "hometotal": "Home Total", "awaytotal": "Away Total"}
         n = 0
         for sub in subs:
             page, pages = 1, 1
@@ -205,7 +223,7 @@ class BetikaOdds:
         return out
 
 
-def scan_betika(hours_ahead=48, markets=("1X2", "DC", "BTTS", "O/U", "COMBO"), callback=None, log=None):
+def scan_betika(hours_ahead=48, markets=("1X2", "DC", "BTTS", "O/U", "COMBO", "DNB", "TTOTAL"), callback=None, log=None):
     return BetikaOdds(log=log).scan(hours_ahead=hours_ahead, markets=markets, callback=callback)
 
 

@@ -342,6 +342,11 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 kept = [l for l in diverse if str(l.get("league", "")).lower() not in blocked]
                 if kept:
                     diverse = kept
+            blocked_mk = set(str(x).lower() for x in (strat.get("blocked_markets") or []))
+            if blocked_mk:
+                keptm = [l for l in diverse if str(l.get("market", "")).lower() not in blocked_mk]
+                if keptm:
+                    diverse = keptm
         except Exception:
             pass
     # Kickoff window: daily = near-term only, weekly = 7 days (missing times kept)
@@ -473,6 +478,10 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         # Dreamer: 7-10 ANALYZED legs 1.5-8.0, payout via count + bet
         # builders — never unscouted filler (see _pick_dreamer).
         dream_cands = _pick_dreamer(assessed, diverse, legs) if want_dream else []
+        # draw insurance: swap 1X2 legs for book-priced DC/DNB same-match
+        # siblings (lowest-margin 1X2 substitutes) whenever they price in band
+        _prefer_insurance(value_cands, assessed)
+        _prefer_insurance(dream_cands, assessed)
         try:
             if progress_cb:
                 progress_cb(f"Daily pair: {len(value_cands)} steady candidates, {len(dream_cands)} dreamer candidates.")
@@ -700,6 +709,57 @@ def _materialize(picked: list, band_lo: float = 1.5, band_hi: float = 7.0, fallb
     return built
 
 
+def _prefer_insurance(cands: list, pool: list, band_lo: float = 1.5, band_hi: float = 8.0) -> None:
+    """Swap 1X2 legs for DC/DNB same-match siblings (draw insurance at a
+    book price, lowest-margin 1X2 substitutes). Keeps the swap only when the
+    insured version prices in band at no worse prob. Mutates cands in place.
+    Never raises."""
+    try:
+        for i, (leg, prob, why) in enumerate(list(cands)):
+            try:
+                if str(leg.get("market", "")) != "1X2":
+                    continue
+                _pick = str(leg.get("_pick") or "").lower()
+                _home = str(leg.get("home_team", ""))
+                _away = str(leg.get("away_team", ""))
+                side = None
+                if _pick in ("1",) or (_home and _home.lower() in _pick):
+                    side = "home"
+                elif _pick in ("2",) or (_away and _away.lower() in _pick):
+                    side = "away"
+                if not side:
+                    continue
+                best = None
+                for leg2, prob2, why2 in pool:
+                    try:
+                        if not _same_match(leg, leg2):
+                            continue
+                        if str(leg2.get("market", "")) not in ("Double chance", "DNB"):
+                            continue
+                        sel2 = str(leg2.get("_pick") or leg2.get("selection") or "").lower()
+                        if side == "home":
+                            ok = ("1x" in sel2 or "dnb:1" in sel2 or (_home and _home.lower() in sel2))
+                        else:
+                            ok = ("x2" in sel2 or "dnb:2" in sel2 or (_away and _away.lower() in sel2))
+                        if not ok:
+                            continue
+                        o2 = float(leg2.get("_sel_price") or leg2.get("best_odds") or 0)
+                        if not (band_lo - 1e-9 <= o2 <= band_hi + 1e-9):
+                            continue
+                        if float(prob2 or 0) < float(prob or 0) - 0.02:
+                            continue
+                        if best is None or float(prob2 or 0) > float(best[1] or 0):
+                            best = (leg2, prob2, str(why2 or why) + " [insured: DC/DNB over 1X2]")
+                    except Exception:
+                        continue
+                if best:
+                    cands[i] = best
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 def _ensure_diversity(picked: list, pool: list) -> None:
     """Span >= 2 markets when candidates allow (swap worst picked leg for the
     best unpicked leg of another market within 0.07 prob). Mutates picked."""
@@ -740,6 +800,18 @@ def _pick_conservative(assessed: list, cap: int = 10) -> list:
             _pr = float(prob or 0.0)
         except Exception:
             _o, _pr = 0.0, 0.0
+        # steady never takes double-margin combos (dreamer's lottery vehicle)
+        try:
+            if "+" in str(leg.get("market", "")):
+                continue
+        except Exception:
+            pass
+        # O/U 2.5 is efficiently priced (we hit 33%): demand a real edge
+        try:
+            if str(leg.get("market", "")) == "O/U 2.5" and _pr * _o < 1.0:
+                continue
+        except Exception:
+            pass
         if len(picks) >= 6 and (_pr < 0.45 or _pr * _o < 0.94):
             continue
         if any(_same_match(leg, p[0]) for p in picks):
@@ -816,6 +888,11 @@ def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None
         except Exception:
             pr = 0.0
         if 1.5 <= _dp <= 8.0 and pr >= 0.40:
+            try:
+                if str(leg.get("market", "")) == "O/U 2.5" and pr * _dp < 1.0:
+                    continue
+            except Exception:
+                pass
             cands.append((leg, pr, why, _dp))
     def _dream_rank(t):
         try:
@@ -856,6 +933,21 @@ Pick the final order (best first, drop any leg you distrust by omitting it, keep
 {{"order": [0, 2, 1], "stake_units": 1.5, "confidence": 0.62, "stake_note": "one short sentence"}}"""
 
 
+def _bankroll_cap(units: float) -> tuple:
+    """Drawdown rule: bankroll below 70u (down 30% from 100u start) halves
+    stakes, floor 0.5u. Returns (units, halved). Never raises."""
+    try:
+        try:
+            import db as _db
+        except ImportError:
+            import worker.db as _db  # type: ignore
+        if _db.get_bankroll() < 70.0:
+            return max(0.5, round(float(units) / 2 * 2) / 2), True
+    except Exception:
+        pass
+    return units, False
+
+
 def _heuristic_stake(built: list, kind: str, why: str = "") -> dict:
     """Kelly-capped fallback when LLM is unavailable. Never stakes big."""
     try:
@@ -874,9 +966,10 @@ def _heuristic_stake(built: list, kind: str, why: str = "") -> dict:
     kelly = max((avg_p * combined - 1.0) / b, 0.0) / 4.0
     cap = 1.0 if kind == "weekly" else 3.0
     units = round(min(max(kelly * 100 / 10.0, 0.5 if kind == "weekly" else 1.0), cap) * 2) / 2
+    units, _halved = _bankroll_cap(units)
     tier = "A · dream ticket" if kind == "weekly" else "B · steady value"
     return {"units": units, "confidence": round(min(avg_p + 0.1, 0.9), 2),
-            "note": f"Tier {tier}. Heuristic sizing (LLM unavailable) — small either way.", "llm": False}
+            "note": f"Tier {tier}. Heuristic sizing (LLM unavailable) — small either way." + (" Bankroll drawdown: stake halved." if _halved else ""), "llm": False}
 
 
 def _agentic_stake(built: list, kind: str, use_ai: bool, progress_cb=None) -> dict:
@@ -966,9 +1059,10 @@ def _agentic_stake(built: list, kind: str, use_ai: bool, progress_cb=None) -> di
         units = float(d.get("stake_units", 1.0))
         cap = 1.0 if kind == "weekly" else 3.0
         units = min(max(units, 0.5), cap)
+        units, _halved2 = _bankroll_cap(units)
         conf = min(max(float(d.get("confidence", 0.5)), 0.05), 0.95)
         return {"units": units, "confidence": round(conf, 2),
-                "note": str(d.get("stake_note", ""))[:220], "llm": True,
+                "note": str(d.get("stake_note", ""))[:220] + (" Bankroll drawdown: stake halved." if _halved2 else ""), "llm": True,
                 "combined_odds": combined}
     except Exception:
         return _heuristic_stake(built, kind)

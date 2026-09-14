@@ -318,10 +318,26 @@ export default function Home() {
   );
 }
 
+function liveProb(ticket) {
+  // cash-out truth: P(all remaining legs hit) from stored probs; a lost leg kills it.
+  try {
+    const legs = ticket.legs || [];
+    if ((ticket.status || 'pending') !== 'pending' || !legs.length) return null;
+    let p = 1;
+    for (const l of legs) {
+      const r = l.result || 'pending';
+      if (r === 'lost') return 0;
+      if (r === 'pending') p *= Math.max(Math.min(Number(l.probability) || 0.5, 0.99), 0.01);
+    }
+    return p;
+  } catch (e) { return null; }
+}
+
 function Slip({ ticket, index, open, onToggle }) {
   const st = ticket.status || 'pending';
   const legs = ticket.legs || [];
   const stake = ticket.stake || {};
+  const alive = liveProb(ticket);
   return (
     <article className={`slip slip-${st}`}>
       <button className="slip-top" onClick={onToggle} aria-expanded={open}>
@@ -339,6 +355,9 @@ function Slip({ ticket, index, open, onToggle }) {
         </div>
         <div className="slip-right">
           <span className={`pill pill-${st}`}>{st}</span>
+          {alive != null && st === 'pending' && (
+            <span className="alive" title="Live win probability from stored leg probs — compare with any cash-out offer">{alive <= 0 ? 'dead' : `alive ${alive < 0.01 ? '<1' : Math.round(alive * 100)}%`}</span>
+          )}
           <span className="pays">{fmtOdds(ticket.combined_odds)}x</span>
           <span className="caret" aria-hidden="true">{open ? '–' : '+'}</span>
         </div>

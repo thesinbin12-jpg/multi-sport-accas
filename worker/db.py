@@ -96,6 +96,24 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS acca_clv (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket_id TEXT NOT NULL DEFAULT '',
+        match TEXT NOT NULL DEFAULT '',
+        market TEXT NOT NULL DEFAULT '',
+        selection TEXT NOT NULL DEFAULT '',
+        filed_odds REAL NOT NULL DEFAULT 0.0,
+        late_odds REAL NOT NULL DEFAULT 0.0,
+        checked_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS acca_bankroll (
+        units REAL NOT NULL DEFAULT 100.0,
+        updated_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS acca_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticket_id TEXT NOT NULL,
@@ -670,6 +688,117 @@ def append_ticket_legs(ticket_id: str, new_legs: list) -> int:
             return len(new_legs)
     except Exception:
         return 0
+
+
+# ---- CLV (closing-line value) + bankroll (units ledger) ----
+
+def save_clv(ticket_id: str, match: str, market: str, selection: str,
+             filed_odds: float, late_odds: float) -> None:
+    """One CLV snapshot row. Never raises."""
+    try:
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO acca_clv (ticket_id, match, market, selection, filed_odds, late_odds, checked_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                                (ticket_id, match, market, selection, float(filed_odds or 0), float(late_odds or 0), _now()))
+                    conn.commit()
+                finally:
+                    conn.close()
+                return
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "INSERT INTO acca_clv (ticket_id, match, market, selection, filed_odds, late_odds, checked_at) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                     (ticket_id, match, market, selection, float(filed_odds or 0), float(late_odds or 0), _now()))
+            conn.commit()
+    except Exception:
+        pass
+
+
+def clv_summary() -> dict:
+    """{n, avg_edge} — edge>0 means we beat the close (real skill signal). Never raises."""
+    try:
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT COUNT(*), AVG((filed_odds-late_odds)/NULLIF(late_odds,0)) FROM acca_clv WHERE late_odds > 0")
+                    r = cur.fetchone()
+                    return {"n": int(r[0] or 0), "avg_edge": round(float(r[1] or 0), 4)}
+                finally:
+                    conn.close()
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), AVG((filed_odds-late_odds)/NULLIF(late_odds,0)) FROM acca_clv WHERE late_odds > 0")
+            r = cur.fetchone()
+            return {"n": int(r[0] or 0), "avg_edge": round(float(r[1] or 0), 4)}
+    except Exception:
+        return {"n": 0, "avg_edge": 0.0}
+
+
+def recompute_bankroll(start_units: float = 100.0) -> float:
+    """Idempotent units ledger: 100 + Σ won_units×(effective_combined−1) − Σ lost_units.
+    Void legs count at 1.0; dissolved tickets move nothing. Persists + returns units."""
+    try:
+        init_schema()
+        import math as _math
+        units = float(start_units)
+        with _lock:
+            tickets = get_tickets(limit=200)
+            for t in tickets:
+                st = (t.get("status") or "pending")
+                if st not in ("won", "lost"):
+                    continue
+                try:
+                    stake = t.get("stake") or {}
+                    u = float(stake.get("units", 2.0) or 2.0)
+                except Exception:
+                    u = 2.0
+                if st == "lost":
+                    units -= u
+                    continue
+                try:
+                    legs = get_legs(t["id"])
+                    eff = _math.prod(max(float(l.get("odds", 1.0)) if l.get("result") != "void" else 1.0, 1.01) for l in legs) if legs else float(t.get("combined_odds", 1.0))
+                except Exception:
+                    eff = float(t.get("combined_odds", 1.0))
+                units += u * (eff - 1.0)
+            units = round(units, 2)
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT units FROM acca_bankroll")
+                    if cur.fetchone():
+                        cur.execute("UPDATE acca_bankroll SET units=%s, updated_at=%s", (units, _now()))
+                    else:
+                        cur.execute("INSERT INTO acca_bankroll (units, updated_at) VALUES (%s,%s)", (units, _now()))
+                    conn.commit()
+                finally:
+                    conn.close()
+            else:
+                conn = _sqlite_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT units FROM acca_bankroll")
+                if cur.fetchone():
+                    _execute(cur, "UPDATE acca_bankroll SET units=%s, updated_at=%s", (units, _now()))
+                else:
+                    _execute(cur, "INSERT INTO acca_bankroll (units, updated_at) VALUES (%s,%s)", (units, _now()))
+                conn.commit()
+        return units
+    except Exception:
+        return float(start_units)
+
+
+def get_bankroll() -> float:
+    try:
+        return recompute_bankroll()
+    except Exception:
+        return 100.0
 
 
 # ---- weekly shortlist (fixture-led 7-day weekly) ----

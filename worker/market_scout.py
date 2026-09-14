@@ -235,6 +235,21 @@ def score_fixture(home, away, markets, progress_cb=None, skip_history=False, lea
                         sides.append(mt.group(1) + mt.group(2) if mt else "?")
                 data_p = _combo_prob(sides) if all(s in prim or s in ("1", "X", "2") for s in sides) else imp
                 why = f"combo model {data_p:.3f} from H {ph:.2f}/D {pd_:.2f}/A {pa:.2f}, BTTS {p_btts:.2f}, O2.5 {p_over:.2f}"
+            elif label == "DNB":
+                _tot = max(0.01, ph + pa)
+                data_p = ph / _tot if nl.endswith(":1") or nl == "1" else pa / _tot
+                why = f"DNB draw-removed: H {ph:.2f}/A {pa:.2f} -> {data_p:.3f}; {form_txt}"
+            elif label in ("Home Total", "Away Total"):
+                import re as _re3
+                _mt = _re3.match(r"(over|under)\s+(\d+(?:\.\d+)?)", nl)
+                _lam = exp_h if label == "Home Total" else exp_a
+                try:
+                    _ln = float(_mt.group(2)) if _mt else 1.5
+                except Exception:
+                    _ln = 1.5
+                _po = _over_prob(_lam, _ln)
+                data_p = _po if (_mt and _mt.group(1) == "over") else 1 - _po
+                why = f"team-total model λ={_lam:.2f} -> O{_ln} {_po:.2f}; {form_txt}"
             else:
                 data_p, why = imp, "no data model for this market"
             blended, w = _blend(data_p, imp, sample)

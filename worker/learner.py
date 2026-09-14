@@ -857,7 +857,9 @@ def _save_patterns(patterns: dict, decision: dict) -> None:
         for kd, p in (patterns.get("by_kind") or {}).items():
             rows.append(("kind", kd, p["sample"], p["wins"], p["rate"], ""))
         for mk, p in (patterns.get("by_market") or {}).items():
-            rows.append(("market", mk, p["sample"], p["wins"], p["rate"], ""))
+            # rule: cold markets auto-avoided (rate<0.45, sample>=8) — data, not opinion
+            _mact = "avoid" if (p["sample"] >= 8 and p["rate"] < 0.45 and mk != "unknown") else ""
+            rows.append(("market", mk, p["sample"], p["wins"], p["rate"], _mact))
         for kind, key, n, w, r, action in rows:
             if _is_pg():
                 _exec(cur, "INSERT INTO acca_patterns (kind, key, sample, wins, rate, action, updated_at) "
@@ -1415,6 +1417,16 @@ def nightly_learn(days_from: int = 5) -> dict:
                     db.append_ticket_legs(_wt["id"], _fresh)
         except Exception:
             pass
+    # CLV snapshot (beat-the-close tracking) + bankroll recompute. Free scan, no LLM.
+    try:
+        clv = verifier.record_clv_snapshot() or {}
+    except Exception:
+        clv = {}
+    try:
+        bank = db.recompute_bankroll()
+        clvsum = db.clv_summary()
+    except Exception:
+        bank, clvsum = 100.0, {"n": 0, "avg_edge": 0.0}
     lost_stories = _explain_losses(legs)
 
     acc = db.get_accuracy_stats()
@@ -1449,6 +1461,12 @@ def nightly_learn(days_from: int = 5) -> dict:
         pass
     if decision.get("llm_model"):
         notes += f" (reasoned by {decision['llm_model']})"
+    try:
+        notes += f" Bankroll {bank:.1f}u."
+        if (clvsum or {}).get("n"):
+            notes += f" CLV edge {clvsum['avg_edge']:+.1%} over {clvsum['n']} legs."
+    except Exception:
+        pass
 
     summary = {
         "verified": verify_summary,
@@ -1459,6 +1477,8 @@ def nightly_learn(days_from: int = 5) -> dict:
         "personas": persona.get("table"),
         "weekly": watch,
         "weekly_fill": wfill,
+        "clv": {**(clv or {}), "summary": clvsum},
+        "bankroll_units": bank,
         "lost_stories": lost_stories,
         "calibration": _calib,
         "team_memory_teams": _tmem_n,
@@ -1483,11 +1503,13 @@ def get_strategy() -> dict:
             rows = cur.fetchall()
         finally:
             conn.close()
-        blocked, preferred = [], None
+        blocked, preferred, blocked_mk = [], None, []
         for r in rows:
             kind, key, action = r[0], r[1], r[2]
             if kind == "league" and action == "avoid":
                 blocked.append(key)
+            if kind == "market" and action == "avoid":
+                blocked_mk.append(key)
             if kind == "odds_band" and action == "prefer":
                 preferred = key
         weights: dict = {}
@@ -1504,9 +1526,9 @@ def get_strategy() -> dict:
         except Exception:
             pass
         return {"blocked_leagues": blocked, "preferred_band": preferred,
-                "persona_weights": weights}
+                "blocked_markets": blocked_mk, "persona_weights": weights}
     except Exception:
-        return {"blocked_leagues": [], "preferred_band": None, "persona_weights": {}}
+        return {"blocked_leagues": [], "preferred_band": None, "blocked_markets": [], "persona_weights": {}}
 
 
 def latest_insights() -> dict:
