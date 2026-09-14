@@ -77,10 +77,12 @@ class BuildRequest(BaseModel):
     use_ai: bool = True
     max_credits: int | None = None
     kind: str = "daily"  # daily | weekly
+    slips: str = "both"  # daily only: both | steady | dreamer (saves the unbuilt slip's tail stages)
 
 
-def _run_build(max_legs, use_ai, max_credits, kind="daily"):
+def _run_build(max_legs, use_ai, max_credits, kind="daily", slips="both"):
     kind = kind if kind in ("daily", "weekly") else "daily"
+    slips = slips if slips in ("both", "steady", "dreamer") else "both"
     _set_state(status="running", started_at=datetime.now(timezone.utc).isoformat(),
                message=f"scanning odds for {kind} slip…", error=None)
     try:
@@ -98,7 +100,7 @@ def _run_build(max_legs, use_ai, max_credits, kind="daily"):
         _detail: dict = {}
         tickets = builder.build_and_save(max_legs=max_legs, use_ai=use_ai,
                                          max_credits=max_credits, progress_cb=progress, kind=kind,
-                                         detail=_detail)
+                                         detail=_detail, slips=slips)
         try:
             _kinds = [(t.get("stake") or {}).get("tier", "value") for t in tickets]
         except Exception:
@@ -280,11 +282,12 @@ def build(req: BuildRequest, background: BackgroundTasks, request: Request):
         if BUILD_STATE["status"] == "running":
             return {"ok": False, "error": "build already running", "state": dict(BUILD_STATE)}
     kind = req.kind if req.kind in ("daily", "weekly") else "daily"
+    slips = req.slips if req.slips in ("both", "steady", "dreamer") else "both"
     background.add_task(_run_build, req.max_legs or config.MAX_LEGS_PER_ACCA,
-                        req.use_ai, req.max_credits or config.MAX_CREDITS_PER_SCAN, kind)
+                        req.use_ai, req.max_credits or config.MAX_CREDITS_PER_SCAN, kind, slips)
     _set_state(status="running", message=f"{kind} build queued…", error=None,
                started_at=datetime.now(timezone.utc).isoformat())
-    return {"ok": True, "message": f"{kind} build started"}
+    return {"ok": True, "message": f"{kind} build started" + (f" ({slips} only)" if kind == "daily" and slips != "both" else "")}
 
 
 @app.post("/verify")

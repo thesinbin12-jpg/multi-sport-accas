@@ -43,6 +43,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('D-slip');
   const [slipTab, setSlipTab] = useState('steady');
+  const [slips, setSlips] = useState('both');
   const isDream = (t) => (t.stake && t.stake.tier === 'dream') || String(t.id || '').startsWith('acca-dream-');
   const steadyTickets = tickets.filter((t) => !isDream(t));
   const dreamTickets = tickets.filter(isDream);
@@ -101,7 +102,7 @@ export default function Home() {
       const res = await fetch('/api/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ kind, max_legs: 20, use_ai: true }),
+        body: JSON.stringify({ kind, max_legs: 20, use_ai: true, slips: kind === 'daily' ? slips : 'both' }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 401) throw new Error('Build key rejected — check the secret matches Vercel CRON_SECRET.');
@@ -208,8 +209,25 @@ export default function Home() {
             value={buildKey}
             onChange={(e) => setBuildKey(e.target.value)}
           />
+          {kind === 'daily' && !building && (
+            <div className="slips" role="tablist" aria-label="Which slips to build">
+              {[['both', 'Both slips'], ['steady', 'Steady only'], ['dreamer', 'Dreamer only']].map(([id, label]) => (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={slips === id}
+                  className={slips === id ? 'slip slip-active' : 'slip'}
+                  onClick={() => setSlips(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <button className="build" onClick={build} disabled={building || workerDown}>
-            {building ? 'Scanning odds…' : (kind === 'daily' ? 'File daily slips (steady + dreamer)' : `File a ${kind} slip`)}
+            {building ? 'Scanning odds…' : (kind === 'daily'
+              ? (slips === 'steady' ? 'File steady slip' : slips === 'dreamer' ? 'File dreamer slip' : 'File daily slips (steady + dreamer)')
+              : `File a ${kind} slip`)}
           </button>
           <p className="sheet-note">
             {building

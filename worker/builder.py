@@ -297,11 +297,15 @@ _LAST_BUILD_DIAG: dict = {}
 
 
 def build_tickets(max_legs: int | None = None, use_ai: bool = True,
-                  max_credits: int | None = None, progress_cb=None, kind: str = "daily") -> list:
+                  max_credits: int | None = None, progress_cb=None, kind: str = "daily",
+                  slips: str = "both") -> list:
     """Build accumulator ticket(s). kind=daily (4-6 legs, value zone ~2.2)
-    or weekly (up to 8 legs, value zone ~3.0, bigger payout)."""
+    or weekly (up to 8 legs, value zone ~3.0, bigger payout).
+    slips (daily only): both | steady | dreamer — skips the unbuilt slip's
+    pick/materialize/stake tail (shared scan+scout+swarm still runs)."""
     globals()["_LAST_BUILD_DIAG"] = {"kind": kind}
     kind = kind if kind in ("daily", "weekly") else "daily"
+    slips = slips if slips in ("both", "steady", "dreamer") else "both"
     weekly = (kind == "weekly")
     max_legs = max_legs or (8 if weekly else config.MAX_LEGS_PER_ACCA)
     max_legs = max(2, min(int(max_legs), 20))  # hard cap 20, never forced: rank pass can trim
@@ -461,12 +465,14 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     # Weekly = single volume ticket (first 8, extras prob>=0.45 + EV>=0.95).
     # Same-match guard always: one leg per fixture on every ticket.
     if kind == "daily":
-        value_cands = _pick_conservative(assessed)
-        _ensure_diversity(value_cands, assessed)
-        # Dreamer fishes the FULL data-scored pool (diverse), not the 34-leg
-        # value-tilted candidate slice — longshots never survive that cut.
-        # Raw scan legs back it up so the pair files while board has longshots.
-        dream_cands = _pick_dreamer(assessed, diverse, legs)
+        want_steady = slips in ("both", "steady")
+        want_dream = slips in ("both", "dreamer")
+        value_cands = _pick_conservative(assessed) if want_steady else []
+        if want_steady:
+            _ensure_diversity(value_cands, assessed)
+        # Dreamer: 7-10 ANALYZED legs 1.5-8.0, payout via count + bet
+        # builders — never unscouted filler (see _pick_dreamer).
+        dream_cands = _pick_dreamer(assessed, diverse, legs) if want_dream else []
         try:
             if progress_cb:
                 progress_cb(f"Daily pair: {len(value_cands)} steady candidates, {len(dream_cands)} dreamer candidates.")
@@ -537,12 +543,14 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             })
         try:
             if progress_cb:
-                if v_built and len(v_built) >= 2 and len(d_built) >= 3:
+                if v_built and len(v_built) >= 2 and len(d_built) >= 5:
                     progress_cb(f"Filed pair: steady {v_comb}x ({len(v_built)} legs) + dreamer {d_comb}x ({len(d_built)} legs).")
                 elif v_built and len(v_built) >= 2:
                     progress_cb(f"Filed steady {v_comb}x ({len(v_built)} legs); no dreamer (<5 analyzed legs in 1.5-8.0).")
+                elif len(d_built) >= 5:
+                    progress_cb(f"Filed dreamer {d_comb}x ({len(d_built)} legs).")
                 else:
-                    progress_cb("Nothing filed: pool too thin for a steady ticket.")
+                    progress_cb("Nothing filed: pool too thin for the requested slip(s).")
         except Exception:
             pass
         globals()["_LAST_BUILD_DIAG"] = {"kind": "daily",
@@ -968,7 +976,7 @@ def _agentic_stake(built: list, kind: str, use_ai: bool, progress_cb=None) -> di
 
 def build_and_save(max_legs: int | None = None, use_ai: bool = True,
                    max_credits: int | None = None, progress_cb=None, kind: str = "daily",
-                   detail: dict | None = None) -> list:
+                   detail: dict | None = None, slips: str = "both") -> list:
     """Build tickets and persist to DB. Returns ticket list.
     detail (optional dict) is filled with last-build diagnostics
     (candidate counts, filed legs/odds) for the public /status."""
@@ -979,11 +987,13 @@ def build_and_save(max_legs: int | None = None, use_ai: bool = True,
         db = db_mod
     else:
         db = db_mod
-    tickets = build_tickets(max_legs=max_legs, use_ai=use_ai, max_credits=max_credits, progress_cb=progress_cb, kind=kind)
+    tickets = build_tickets(max_legs=max_legs, use_ai=use_ai, max_credits=max_credits, progress_cb=progress_cb, kind=kind, slips=slips)
     for t in tickets:
         db.save_ticket(t["id"], t["combined_odds"], t["legs"], t["status"], kind=t.get("kind", "daily"), stake=t.get("stake"))
     try:
-        db.prune_pending(kind=tickets[0].get("kind", kind) if tickets else kind, keep=2)
+        # single-slip runs must NOT prune: keep=2 would eat yesterday's pair.
+        if kind != "daily" or (slips or "both") == "both":
+            db.prune_pending(kind=tickets[0].get("kind", kind) if tickets else kind, keep=2)
     except Exception:
         pass
     if detail is not None:

@@ -63,6 +63,9 @@ body {
 .build:hover:not(:disabled) { background: var(--accent-deep); }
 .build:disabled { background: #9aa89d; cursor: not-allowed; }
 .build-key { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 14px; font-family: inherit; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: inherit; margin-bottom: 8px; }
+.slips { display: flex; gap: 6px; margin-bottom: 8px; }
+.slip { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 6px; font-size: 13px; font-family: inherit; color: var(--muted); cursor: pointer; }
+.slip-active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-deep); font-weight: 700; }
 .sheet-note { margin-top: 10px; font-size: 13px; color: var(--muted); }
 .sheet-error { margin-top: 8px; font-size: 13.5px; color: var(--lost); }
 
