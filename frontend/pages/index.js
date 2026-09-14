@@ -9,8 +9,8 @@ const isFresh = (t) => {
   }
 };
 const KINDS = [
-  { id: 'daily', label: 'Daily', blurb: 'Steady ~50x + dreamer (7–10 analyzed legs). Build both or one. Settles fast.' },
-  { id: 'weekly', label: 'Weekly', blurb: 'One 7-day ticket, up to 25 legs. Seeds Monday, fills nightly as books price the week.' },
+  { id: 'daily', label: 'Daily', blurb: 'Steady ~50x + dreamer. Both or one.' },
+  { id: 'weekly', label: 'Weekly', blurb: 'One ticket, up to 25 legs. Seeds Monday, fills nightly.' },
 ];
 
 function shortId(id) {
@@ -181,8 +181,7 @@ export default function Home() {
         <div className="sheet-copy">
           <h2 className="sheet-head">{todayName()}&rsquo;s value, on one slip.</h2>
           <p className="sheet-sub">
-            Scans every soccer fixture across real bookmaker and exchange odds, scores each market
-            with data models plus AI analysts, and keeps the best-value combination.
+            Every soccer fixture, real bookmaker odds, data models + AI analysts. Keeps the best value.
             {best > 0 ? ` Best ${kind} on file pays ${fmtOdds(best)}x.` : ` No ${kind} slips filed yet.`}
           </p>
           <div className="kinds" role="tablist" aria-label="Slip type">
@@ -233,8 +232,8 @@ export default function Home() {
             {building
               ? status.message || 'Working…'
               : (kind === 'daily'
-                ? 'Manual trigger only. Takes a while (deep multi-agent analysis). No staking. Pick Both, Steady only or Dreamer only above — steady ~50x for value, dreamer 7–10 analyzed legs (bet builders) where the payout comes from count.'
-                : `Manual trigger only. Takes a while (deep multi-agent analysis). No staking. Up to 25 legs — quality decides. ${activeKind.blurb}`)}
+                ? 'Manual trigger, takes a while. No staking. Steady ~50x for value; dreamer = 7–10 analyzed legs.'
+                : `Manual trigger, takes a while. No staking. Up to 25 legs, quality decides.`)}
           </p>
           {error && <p className="sheet-error">{error}</p>}
         </div>
@@ -281,7 +280,7 @@ export default function Home() {
             <h3>{filter === SLIP_TAB ? `No ${kind} slip yet.` : `No ${filter.toLowerCase()} ${kind} slips.`}</h3>
             <p>
               {filter === SLIP_TAB
-                ? (kind === 'daily' ? 'File daily slips above — one trigger files both steady and dreamer.' : `File a ${kind} slip above. It will appear here with every leg priced.`)
+                ? (kind === 'daily' ? 'File slips above — steady, dreamer, or both.' : `File a ${kind} slip above. It will appear here with every leg priced.`)
                 : 'Try another filter, or file a fresh slip.'}
             </p>
           </div>
