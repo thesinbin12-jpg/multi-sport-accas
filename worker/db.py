@@ -32,8 +32,9 @@ def _pg_conn():
         "keepalives_interval": 10,
         "keepalives_count": 3,
     }
-    if "options=" not in url:
-        kwargs["options"] = "-c statement_timeout=20000"  # queries can never hang forever
+    # NOTE: statement_timeout is NOT sent — Neon pgbouncer rejects it as an
+    # unsupported startup parameter (https://neon.tech/docs/connect/connection-errors).
+    # The client-side timeouts above are what bound the hang.
     return psycopg2.connect(url, **kwargs)
 
 

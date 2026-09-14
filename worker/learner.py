@@ -62,8 +62,8 @@ def _conn():
             "keepalives": 1, "keepalives_idle": 30,
             "keepalives_interval": 10, "keepalives_count": 3,
         }
-        if "options=" not in url:
-            kwargs["options"] = "-c statement_timeout=20000"
+        # statement_timeout NOT sent — Neon pgbouncer rejects it as an unsupported
+        # startup parameter; the client-side timeouts above bound the hang.
         return psycopg2.connect(url, **kwargs)
     import sqlite3  # type: ignore
     path = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "accas.db"))
