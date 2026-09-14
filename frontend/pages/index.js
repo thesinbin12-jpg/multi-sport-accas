@@ -9,8 +9,8 @@ const isFresh = (t) => {
   }
 };
 const KINDS = [
-  { id: 'daily', label: 'Daily', blurb: 'Two slips per build: steady ~50x + dreamer. Settles fast.' },
-  { id: 'weekly', label: 'Weekly', blurb: 'Up to 20 legs, bigger odds, settles over the week.' },
+  { id: 'daily', label: 'Daily', blurb: 'Steady ~50x + dreamer (7–10 analyzed legs). Build both or one. Settles fast.' },
+  { id: 'weekly', label: 'Weekly', blurb: 'One 7-day ticket, up to 25 legs. Seeds Monday, fills nightly as books price the week.' },
 ];
 
 function shortId(id) {
@@ -233,8 +233,8 @@ export default function Home() {
             {building
               ? status.message || 'Working…'
               : (kind === 'daily'
-                ? 'Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. One trigger files two slips: steady ~50x for value, dreamer for the miracle.'
-                : `Manual trigger only. Takes several minutes (deep multi-agent analysis). No staking. Up to 20 legs — quality decides. ${activeKind.blurb}`)}
+                ? 'Manual trigger only. Takes a while (deep multi-agent analysis). No staking. Pick Both, Steady only or Dreamer only above — steady ~50x for value, dreamer 7–10 analyzed legs (bet builders) where the payout comes from count.'
+                : `Manual trigger only. Takes a while (deep multi-agent analysis). No staking. Up to 25 legs — quality decides. ${activeKind.blurb}`)}
           </p>
           {error && <p className="sheet-error">{error}</p>}
         </div>

@@ -14,6 +14,25 @@ OR_BASE = "https://openrouter.ai/api/v1"
 NIM_KEY = os.environ.get("NVIDIA_API_KEY", "")
 NIM_BASE = "https://integrate.api.nvidia.com/v1"
 NIM_MODELS = [m.strip() for m in os.environ.get("NIM_MODELS", "mistralai/mistral-nemotron,meta/muse-glimmer-30b,moonshotai/kimi-k3,nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3.5-lightning-30b-a3b,deepseek-ai/deepseek-v4-flash-0731").split(",") if m.strip()]
+
+# Flap cooldown: models that time out / 429 / 5xx sit out 10 min so one hung
+# model (e.g. kimi 90s) can't stall every call. In-process, never raises.
+_COOLDOWN: dict = {}
+_COOLDOWN_SECS = 600
+
+
+def _cool(model):
+    try:
+        _COOLDOWN[str(model)] = time.time() + _COOLDOWN_SECS
+    except Exception:
+        pass
+
+
+def _hot(model):
+    try:
+        return time.time() < float(_COOLDOWN.get(str(model), 0))
+    except Exception:
+        return False
 # NOTE: deepseek-v4-flash is a reasoning model (needs big max_tokens, slower) ->
 # last in chain as extra fallback. deepseek-v4-pro hangs (150s timeout, no bytes)
 # -> deliberately NOT listed (2026-09-13).
@@ -67,9 +86,13 @@ class AIRouter:
                 return data["choices"][0]["message"]["content"], None
             elif r.status_code == 404:
                 return None, f"Model {model} not found"
+            elif r.status_code == 429:
+                _cool(model)
+                return None, f"Groq rate limited: {model}"
             else:
                 return None, f"Groq error {r.status_code}: {r.text[:100]}"
         except requests.exceptions.Timeout:
+            _cool(model)
             return None, "Groq timeout"
         except Exception as e:
             return None, f"Groq exception: {e}"
@@ -95,17 +118,21 @@ class AIRouter:
                 f"{NIM_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {NIM_KEY}", "Content-Type": "application/json"},
                 json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
-                timeout=150,
+                timeout=25,
             )
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"], None
             if r.status_code == 429:
+                _cool(model)
                 return None, "NIM rate limited"
             if r.status_code == 404:
                 return None, "Model not entitled: " + str(model)
+            if r.status_code >= 500:
+                _cool(model)
             return None, "NIM error %s: %s" % (r.status_code, r.text[:100])
         except requests.exceptions.Timeout:
-            return None, "NIM timeout"
+            _cool(model)
+            return None, "NIM timeout (25s fast-fail)"
         except Exception as e:
             return None, "NIM exception: " + str(e)
 
@@ -192,9 +219,10 @@ class AIRouter:
         # (MissingSessionID server-side); paid models need a payment method.
         # Zen stays LAST until the workspace can serve API calls.
         
-        # Phase 1: Try Groq models in order
+        # Phase 1: Try Groq models in order (flapping models sit out 10min)
         if not model_pref or model_pref == "groq":
-            for model in self.groq_models:
+            _gq = [m for m in self.groq_models if not _hot(m)] or list(self.groq_models)
+            for model in _gq:
                 text, err = self.call_groq(model, messages)
                 if text and not err:
                     elapsed = time.time() - start
@@ -223,8 +251,10 @@ class AIRouter:
         # OpenCode client (MissingSessionID server-side even with session
         # header; quota exhausted), paid needs billing. Kept out of chain.
         # Phase 5: NVIDIA NIM (tested winners; needs key; models via NIM_MODELS env)
+        # Flapping models sit out 10min so one hang can't stall every call.
         if not model_pref or model_pref == "nim":
-            for model in NIM_MODELS:
+            _nm = [m for m in NIM_MODELS if not _hot(m)] or list(NIM_MODELS)
+            for model in _nm:
                 text, err = self.call_nim(model, messages)
                 if text and not err:
                     elapsed = time.time() - start
