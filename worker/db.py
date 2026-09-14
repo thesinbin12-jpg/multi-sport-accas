@@ -9,6 +9,7 @@ import config
 
 _lock = threading.Lock()
 _sqlite_conn_obj = None
+_schema_ok = False  # per-process: schema is idempotent, no need to re-check every call
 
 
 def _is_postgres() -> bool:
@@ -17,9 +18,23 @@ def _is_postgres() -> bool:
 
 
 def _pg_conn():
+    """Fresh Neon connection, but bounded: without connect_timeout libpq blocks
+    indefinitely when pgbouncer is saturated, which made /status and /accas hang
+    forever during learn runs. Timeouts turn that into a fast, catchable error."""
     import psycopg2  # type: ignore
     import psycopg2.extras  # type: ignore
-    return psycopg2.connect(config.DATABASE_URL)
+    url = config.DATABASE_URL or ""
+    kwargs = {
+        "connect_timeout": 10,        # TCP+TLS+auth handshake cap (was: infinite)
+        "tcp_user_timeout": 15000,    # abort dead sockets after 15s
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+    }
+    if "options=" not in url:
+        kwargs["options"] = "-c statement_timeout=20000"  # queries can never hang forever
+    return psycopg2.connect(url, **kwargs)
 
 
 def _sqlite_conn():
@@ -165,6 +180,11 @@ def ping() -> None:
 
 
 def init_schema() -> None:
+    """Runs once per process (was: on every db call = 2x connections per op,
+    hundreds of handshakes during a learn run -> Neon saturation -> hangs)."""
+    global _schema_ok
+    if _schema_ok:
+        return
     with _lock:
         if _is_postgres():
             conn = _pg_conn()
@@ -186,6 +206,7 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN IF NOT EXISTS settle TEXT DEFAULT ''")
                 cur.execute("CREATE TABLE IF NOT EXISTS acca_team_aliases (variant TEXT PRIMARY KEY, canonical TEXT NOT NULL DEFAULT '', hits INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT '')")
                 conn.commit()
+                _schema_ok = True
             finally:
                 conn.close()
         else:
@@ -213,8 +234,9 @@ def init_schema() -> None:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN bookmaker TEXT DEFAULT ''")
             if "settle" not in leg_cols:
                 cur.execute("ALTER TABLE acca_legs ADD COLUMN settle TEXT DEFAULT ''")
-            cur.execute("CREATE TABLE IF NOT EXISTS acca_team_aliases (variant TEXT PRIMARY KEY, canonical TEXT DEFAULT '', hits INTEGER DEFAULT 1, updated_at TEXT DEFAULT '')")
+            cur.execute("CREATE TABLE IF NOT EXISTS acca_team_aliases (variant TEXT PRIMARY KEY, canonical TEXT DEFAULT '', hits INTEGER DEFAULT 1, updated_at TEXT NOT NULL DEFAULT '')")
             conn.commit()
+        _schema_ok = True
 
 
 def _now() -> str:

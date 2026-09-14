@@ -55,7 +55,16 @@ def _is_pg() -> bool:
 def _conn():
     if _is_pg():
         import psycopg2  # type: ignore
-        return psycopg2.connect(os.environ.get("DATABASE_URL") or config.DATABASE_URL)
+        url = os.environ.get("DATABASE_URL") or config.DATABASE_URL
+        kwargs = {
+            "connect_timeout": 10,
+            "tcp_user_timeout": 15000,
+            "keepalives": 1, "keepalives_idle": 30,
+            "keepalives_interval": 10, "keepalives_count": 3,
+        }
+        if "options=" not in url:
+            kwargs["options"] = "-c statement_timeout=20000"
+        return psycopg2.connect(url, **kwargs)
     import sqlite3  # type: ignore
     path = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "accas.db"))
     conn = sqlite3.connect(path, check_same_thread=False)
