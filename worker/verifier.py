@@ -892,11 +892,12 @@ def web_search(query: str, max_results: int = 3) -> dict:
                 return {"text": _txt, "source": "brave" if "brave" in _src else "duckduckgo" if "ddg" in _src else _src}
     except Exception:
         pass
-    text = _tavily_search(query, max_results)
-    if text:
-        return {"text": text, "source": "tavily"}
+    # Tavily is LAST resort (paid quota): direct DDG runs before it.
     text = _ddg_search(query, max_results)
-    return {"text": text, "source": "duckduckgo" if text else "none"}
+    if text:
+        return {"text": text, "source": "duckduckgo"}
+    text = _tavily_search(query, max_results)
+    return {"text": text, "source": "tavily" if text else "none"}
 
 
 def leg_context(match: str, max_age_days: int = 2) -> dict:

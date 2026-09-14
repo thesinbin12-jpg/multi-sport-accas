@@ -354,13 +354,19 @@ def _run_learn():
         out = learner.nightly_learn()
         spec = (out.get("summary") or {}).get("weekly_rebuild") or out.get("weekly_rebuild")
         if spec:
-            ceiling = int(spec.get("max_legs", 5))
+            ceiling = max(2, min(int(spec.get("max_legs", 5) or 5), 25))
+            _set_state(status="running", message="nightly learn done — rebuilding dissolved weekly…")
             try:
                 import builder as _b2
             except ImportError:
                 from worker import builder as _b2  # type: ignore
-            _b2.build_and_save(max_legs=ceiling, use_ai=True, max_credits=None, kind="weekly")
-            out["weekly_rebuild_done"] = True
+            try:
+                _filed = _b2.build_and_save(max_legs=ceiling, use_ai=True, max_credits=None, kind="weekly")
+                out["weekly_rebuild_done"] = True
+                out["weekly_rebuild_filed"] = len(_filed or [])
+            except Exception as _re:
+                out["weekly_rebuild_done"] = False
+                out["weekly_rebuild_error"] = str(_re)[:200]
         _set_state(status="done", finished_at=datetime.now(timezone.utc).isoformat(),
                    message="nightly learn done", error=None)
     except Exception as e:

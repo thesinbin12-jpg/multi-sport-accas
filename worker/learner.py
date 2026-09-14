@@ -231,13 +231,50 @@ def _ask_llm(prompt: str, system: str) -> tuple[str | None, str | None]:
 
 
 def _extract_json(text: str) -> dict | None:
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
+    """Best-effort JSON object extraction. Handles ``` fences, <think>
+    preamble (reasoning models), trailing prose, and trailing commas.
+    Scans string-aware balanced objects, tries the LAST one first
+    (the answer, not the thinking)."""
+    if not text:
         return None
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return None
+    t = re.sub(r"```(?:json)?", "", text)
+    cands: list = []
+    i, n = 0, len(t)
+    while i < n:
+        if t[i] == "{":
+            depth, instr, esc, j = 0, False, False, i
+            while j < n:
+                c = t[j]
+                if instr:
+                    if esc:
+                        esc = False
+                    elif c == "\\":
+                        esc = True
+                    elif c == '"':
+                        instr = False
+                else:
+                    if c == '"':
+                        instr = True
+                    elif c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            cands.append(t[i:j + 1])
+                            break
+                j += 1
+            i = j + 1 if (j < n and depth == 0) else i + 1
+        else:
+            i += 1
+    for raw in reversed(cands):
+        for attempt in (raw, re.sub(r",\s*([}\]])", r"\1", raw)):
+            try:
+                d = json.loads(attempt)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                continue
+    return None
 
 
 # ---- step 1: gather (tools) ----
@@ -818,6 +855,24 @@ def reason(patterns: dict, legs: list, prev_notes: str, persona: dict | None = N
         return d
     decision = _extract_json(text)
     if not decision:
+        # Log the raw head so /insights shows WHY parsing failed (model? truncation?).
+        try:
+            log_llm_error("learn", model or "", "learn-reason",
+                          ("unparseable JSON reply head: " + (text or ""))[:300])
+        except Exception:
+            pass
+        # One retry: nudge for bare JSON only (reasoning models bury it in prose).
+        try:
+            text2, model2 = _ask_llm(
+                "Reply with ONLY the JSON object, no prose, no fences, no thinking tags:\n" + prompt,
+                ANALYST_SYSTEM)
+            if text2:
+                _d2 = _extract_json(text2)
+                if _d2:
+                    decision, model, text = _d2, model2, text2
+        except Exception:
+            pass
+    if not decision:
         d = _heuristic_fallback(patterns)
         d["notes"] = "LLM reply was not valid JSON — fell back to heuristics."
         return d
@@ -946,6 +1001,23 @@ def weekly_watch() -> dict:
                 "total": len(results)}
     except Exception as e:
         return {"state": "error", "error": str(e)[:200]}
+
+
+def dissolved_rebuild_spec() -> dict | None:
+    """Catch-up: latest weekly dissolved with no pending replacement (e.g. a
+    restart killed the learn-task rebuild). Returns a rebuild spec or None.
+    Never raises."""
+    try:
+        if _latest_ticket("weekly", statuses=("pending",)):
+            return None
+        dis = _latest_ticket("weekly", statuses=("dissolved",))
+        if not dis:
+            return None
+        n = len(db.get_legs(dis["id"]))
+        return {"kind": "weekly", "max_legs": max(2, n - 2),
+                "after": dis["id"]}
+    except Exception:
+        return None
 
 
 def _explain_losses(legs: list, max_n: int = 6) -> list:
@@ -1396,10 +1468,25 @@ def nightly_learn(days_from: int = 5) -> dict:
                    "personas": persona.get("table"), "weekly": weekly_watch(),
                    "lost_stories": [], "decision": {"notes": notes}}
         _save_debrief(0, summary, notes)
-        return {"ok": True, "notes": notes, "summary": summary}
+        out = {"ok": True, "notes": notes, "summary": summary}
+        try:
+            _w = summary.get("weekly") or {}
+            _spec = (_w.get("rebuild") if _w.get("state") == "dissolved" else None) \
+                or dissolved_rebuild_spec()
+            if _spec:
+                out["weekly_rebuild"] = _spec
+        except Exception:
+            pass
+        return out
     decision = reason(patterns, legs, (prev or {}).get("notes", ""), persona)
     _save_patterns(patterns, decision)
     watch = weekly_watch()
+    # Dissolve MUST rebuild: live spec wins, else catch-up (restart-kill case).
+    _rebuild_spec = None
+    if watch.get("state") == "dissolved" and watch.get("rebuild"):
+        _rebuild_spec = dict(watch["rebuild"])
+    if _rebuild_spec is None:
+        _rebuild_spec = dissolved_rebuild_spec()
     wfill = {"priced": 0}
     if watch.get("state") == "holding":
         # WEEKLY FILL: fixture-led shortlist prices Wed-Sun legs as books
@@ -1444,6 +1531,8 @@ def nightly_learn(days_from: int = 5) -> dict:
         notes += f" Weekly {watch.get('ticket')} DISSOLVED (spoilt: {', '.join(watch.get('lost') or [])}); rebuild queued."
     elif watch.get("state") == "holding":
         notes += f" Weekly {watch.get('ticket')} holding ({watch.get('decided')}/{watch.get('total')} decided)."
+    if _rebuild_spec and watch.get("state") != "dissolved":
+        notes += " Dissolved weekly has no replacement; rebuild queued."
     for s in (lost_stories or []):
         if s.get("why") and s["why"] != "unexplained":
             notes += f" Lost {s['match']}: {s['why']}."
@@ -1487,8 +1576,8 @@ def nightly_learn(days_from: int = 5) -> dict:
     }
     _save_debrief(verify_summary.get("checked", 0), summary, notes)
     out = {"ok": True, "notes": notes, "summary": summary}
-    if watch.get("state") == "dissolved" and watch.get("rebuild"):
-        out["weekly_rebuild"] = watch["rebuild"]
+    if _rebuild_spec:
+        out["weekly_rebuild"] = _rebuild_spec
     return out
 
 

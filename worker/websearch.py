@@ -14,6 +14,8 @@ import time
 _UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
        "Chrome/120.0 Mobile Safari/537.36")
 
+_SKIP_UNTIL: dict = {}  # backend -> epoch: skip fast while chronically failing
+
 
 def _sess():
     try:
@@ -44,8 +46,16 @@ def brave_search(query, max_results=5, timeout=20):
         if s is None:
             _rec("web-brave", False, 0, "no curl_cffi")
             return out
-        r = s.get("https://search.brave.com/search", params={"q": query}, timeout=timeout)
-        if r.status_code != 200 or 'data-type="web"' not in r.text:
+        r = None
+        for _att in range(2):  # 429s are routine from datacenters; one backoff retry
+            try:
+                r = s.get("https://search.brave.com/search", params={"q": query}, timeout=timeout)
+                if r.status_code == 200 and 'data-type="web"' in r.text:
+                    break
+            except Exception:
+                r = None
+            time.sleep(4)
+        if r is None or r.status_code != 200 or 'data-type="web"' not in r.text:
             _rec("web-brave", False, int((_t.time() - _t0) * 1000), "status %s" % getattr(r, "status_code", "?"))
             return out
         for b in r.text.split('data-type="web"')[1:]:
@@ -77,15 +87,31 @@ def brave_search(query, max_results=5, timeout=20):
 
 def ddg_search(query, max_results=5, timeout=20):
     out = []
+    import time as _t
+    _t0 = _t.time()
     try:
-        import requests as _rq
-        r = _rq.post("https://lite.duckduckgo.com/lite/", data={"q": query},
-                     headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
-        if r.status_code != 200:
+        body = ""
+        s = _sess()  # impersonated session first (datacenter-friendly)
+        if s is not None:
+            try:
+                r = s.post("https://lite.duckduckgo.com/lite/", data={"q": query},
+                           headers={"User-Agent": _UA}, timeout=timeout)
+                if r.status_code == 200:
+                    body = r.text
+            except Exception:
+                body = ""
+        if not body:
+            import requests as _rq
+            r = _rq.post("https://lite.duckduckgo.com/lite/", data={"q": query},
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+            if r.status_code == 200:
+                body = r.text
+        if not body:
+            _rec("web-ddg", False, int((_t.time() - _t0) * 1000), "no body")
             return out
-        links = re.findall(r"<a[^>]*href=['\"](https?://[^'\"]+)['\"][^>]*class=['\"]result-link['\"]", r.text)
-        titles = re.findall(r"class=['\"]result-link['\"][^>]*>(.*?)</a", r.text)
-        snips = re.findall(r"class=['\"]result-snippet['\"][^>]*>(.*?)</td", r.text)
+        links = re.findall(r"<a[^>]*href=['\"](https?://[^'\"]+)['\"][^>]*class=['\"]result-link['\"]", body)
+        titles = re.findall(r"class=['\"]result-link['\"][^>]*>(.*?)</a", body)
+        snips = re.findall(r"class=['\"]result-snippet['\"][^>]*>(.*?)</td", body)
         for i, t in enumerate(titles[:max_results]):
             title = html.unescape(re.sub(r"<.*?>", "", t)).strip()
             sn = html.unescape(re.sub(r"<.*?>", "", snips[i])).strip() if i < len(snips) else ""
@@ -94,8 +120,12 @@ def ddg_search(query, max_results=5, timeout=20):
                 url = ""  # internal redirect, not fetchable content
             if title:
                 out.append({"title": title, "snippet": sn[:250], "source": "ddg", "url": url})
-    except Exception:
-        pass
+        _rec("web-ddg", bool(out), int((_t.time() - _t0) * 1000), "" if out else "empty")
+    except Exception as e:
+        try:
+            _rec("web-ddg", False, 0, str(e)[:120])
+        except Exception:
+            pass
     return out
 
 
@@ -119,15 +149,40 @@ def tavily_search(query, max_results=4, timeout=20):
         for x in (d.get("results") or [])[:max_results]:
             out.append({"title": str(x.get("title", ""))[:120],
                         "snippet": str(x.get("content", ""))[:300], "source": "tavily"})
-    except Exception:
-        pass
+        _rec("web-tavily", bool(out), 0, "" if out else "empty")
+    except Exception as e:
+        try:
+            _rec("web-tavily", False, 0, str(e)[:120])
+        except Exception:
+            pass
     return out
 
 
+def _backend_ok(name):
+    """False when a backend is chronically failing (skip fast, save latency),
+    with a 30-min re-probe so recoveries are picked up. Never raises."""
+    import time as _tt
+    try:
+        if _SKIP_UNTIL.get(name, 0) > _tt.time():
+            return False
+        try:
+            from learner import source_usable as _su
+        except ImportError:
+            from worker.learner import source_usable as _su  # type: ignore
+        if not _su(name, min_rate=0.15, min_n=5):
+            _SKIP_UNTIL[name] = _tt.time() + 1800
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def search(query, max_results=5, allow_tavily=False, timeout=20):
-    """Free-first unified search. Returns [{title, snippet, source, url}]. Never raises."""
-    out = brave_search(query, max_results, timeout)
-    if len(out) < 2:
+    """Free-first unified search. Returns [{title, snippet, source, url}]. Never raises.
+    Chronically-failing backends are skipped fast (30-min re-probe); Tavily
+    only when explicitly allowed (paid quota)."""
+    out = brave_search(query, max_results, timeout) if _backend_ok("web-brave") else []
+    if len(out) < 2 and _backend_ok("web-ddg"):
         out = out + [r for r in ddg_search(query, max_results, timeout)
                      if r["title"] not in {x["title"] for x in out}]
     if allow_tavily and len(out) < 2:
