@@ -457,7 +457,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
         assessed.append((leg, prob, why))
     # Phase 2: pick.
     # Daily = TWO slips from one trigger: steady (~50x, best probs) +
-    # dreamer (high-odds longshots, own sourcing so it always files).
+    # dreamer (7-10 ANALYZED legs 1.5-8.0, payout via count + bet builders).
     # Weekly = single volume ticket (first 8, extras prob>=0.45 + EV>=0.95).
     # Same-match guard always: one leg per fixture on every ticket.
     if kind == "daily":
@@ -516,9 +516,9 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 "kind": "daily",
                 "stake": stake_v,
             })
-        d_built = _materialize(dream_cands, band_lo=2.5, band_hi=7.0, fallback="closest")
+        d_built = _materialize(dream_cands, band_lo=1.5, band_hi=8.0, fallback="drop")
         d_comb = 0.0
-        if len(d_built) >= 3:
+        if len(d_built) >= 5:
             d_comb = round(math.prod(max(float(b["odds"]), 1.01) for b in d_built), 3)
             _joint = 1.0
             for b in d_built:
@@ -540,7 +540,7 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
                 if v_built and len(v_built) >= 2 and len(d_built) >= 3:
                     progress_cb(f"Filed pair: steady {v_comb}x ({len(v_built)} legs) + dreamer {d_comb}x ({len(d_built)} legs).")
                 elif v_built and len(v_built) >= 2:
-                    progress_cb(f"Filed steady {v_comb}x ({len(v_built)} legs); no dreamer (<3 longshots in pool).")
+                    progress_cb(f"Filed steady {v_comb}x ({len(v_built)} legs); no dreamer (<5 analyzed legs in 1.5-8.0).")
                 else:
                     progress_cb("Nothing filed: pool too thin for a steady ticket.")
         except Exception:
@@ -605,6 +605,17 @@ def _materialize(picked: list, band_lo: float = 1.5, band_hi: float = 7.0, fallb
     The band check applies to fallbacks too (fav=min-price bug fix)."""
     built = []
     for leg, prob, why in picked:
+        # file-time kickoff guard: a leg that already started (or starts
+        # within 15min) is unstakeable — drop it, never file it.
+        try:
+            from datetime import datetime as _dtn, timezone as _tzn, timedelta as _tdn
+            _ct = _dtn.fromisoformat(str(leg.get("commence_time", "")).replace("Z", "+00:00"))
+            if _ct.tzinfo is None:
+                _ct = _ct.replace(tzinfo=_tzn.utc)
+            if _ct <= _dtn.now(_tzn.utc) + _tdn(minutes=15):
+                continue
+        except Exception:
+            pass
         outcomes = leg.get("outcomes", []) or []
         if not outcomes:
             try:
@@ -748,24 +759,35 @@ def _trim_to_target(built: list, target: float = 50.0, min_legs: int = 4, max_le
 
 
 def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None) -> list:
-    """Dreamer longshot picks with OWN sourcing (never starves on swarm
-    leftovers): best-known prob per leg (swarm > data model > implied),
-    odds band 2.5-7.0, prob>=0.10. Ranked by EV, up to 8 legs, ONE per
-    fixture (same-match doubles are near-duplicate exposure), stops at
-    10000x with >=4. Needs >=3 to file.
-    When the data-scored pool is short, tops up from the RAW scan legs
-    (2.5-4.5, price-ascending, implied prob) so the pair ALWAYS files
-    while longshots exist on the board (verified 1000+ live)."""
+    """Dreamer = 7-10 ANALYZED legs where the payout comes from COUNT, not
+    lottery tickets. Best-probability legs only (swarm-debated, data-modelled
+    or AI-assessed — never pure-implied), per-leg odds 1.5-8.0, prob>=0.40.
+    Combo/bet-builder markets (1X2&BTTS, 1X2+O/U, O/U&BTTS) rank first: one
+    combo leg per fixture captures same-match correlation at a book-priced
+    number. ONE leg per fixture always. No raw top-up: unscouted legs never
+    file. Needs >=5 analyzed legs to file."""
     aprobs: dict = {}
     for leg, prob, why in assessed:
         try:
             aprobs[id(leg)] = (float(prob or 0.0), why)
         except Exception:
             pass
+    def _analyzed(leg, why):
+        try:
+            _w = str(why or "")
+            if _w == "implied (AI off)" or "board longshot" in _w or "undebated longshot" in _w:
+                return False
+            if str(leg.get("analysis", "") or "").strip():
+                return True
+            return bool(_w.strip())
+        except Exception:
+            return False
     cands = []
     for leg in candidates:
         if id(leg) in aprobs:
             pr, why = aprobs[id(leg)]
+            if not _analyzed(leg, why):
+                continue
         else:
             why = ""
             try:
@@ -775,22 +797,28 @@ def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None
                 why = str(_pd[3])[:160] if _pd and len(_pd) > 3 else ""
             except Exception:
                 pr = 0.0
-            if not pr:
-                try:
-                    pr = 1.0 / max(float(leg.get("_sel_price") or leg.get("best_odds") or 7.0), 1.01)
-                except Exception:
-                    pr = 0.0
-                why = why or f"implied {round(pr, 3)} (undebated longshot)"
+            if not pr or not _analyzed(leg, why):
+                continue
         try:
             _dp = float(leg.get("_sel_price") or leg.get("best_odds") or 0)
         except Exception:
             _dp = 0
-        if 2.5 <= _dp <= 7.0 and pr >= 0.10:
+        try:
+            pr = float(pr or 0.0)
+        except Exception:
+            pr = 0.0
+        if 1.5 <= _dp <= 8.0 and pr >= 0.40:
             cands.append((leg, pr, why, _dp))
-    cands.sort(key=lambda t: (-(t[1] * t[3]), -t[3]))
+    def _dream_rank(t):
+        try:
+            _cb = 0 if "+" in str(t[0].get("market", "")) else 1
+        except Exception:
+            _cb = 1
+        return (_cb, -(t[1] * t[3]), -t[3])
+    cands.sort(key=_dream_rank)
     picks, comb, fix = [], 1.0, {}
     for leg, pr, why, dp in cands:
-        if len(picks) >= 8:
+        if len(picks) >= 10:
             break
         try:
             fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
@@ -801,46 +829,6 @@ def _pick_dreamer(assessed: list, candidates: list, raw_legs: list | None = None
         picks.append((leg, pr, why))
         fix[fk] = fix.get(fk, 0) + 1
         comb *= max(dp, 1.01)
-        if comb >= 10000 and len(picks) >= 4:
-            break
-    # Top-up from the raw scan (unscouted, implied prob) when data is short.
-    if len(picks) < 8 and raw_legs:
-        try:
-            _raw = []
-            for leg in raw_legs:
-                try:
-                    _o = float(leg.get("best_odds") or 0)
-                except Exception:
-                    continue
-                if not (2.5 <= _o <= 4.5):
-                    continue
-                try:
-                    fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
-                except Exception:
-                    continue
-                if fix.get(fk, 0) >= 1:
-                    continue
-                if any(_same_match(leg, p[0]) and str(leg.get("market")) == str(p[0].get("market")) for p in picks):
-                    continue
-                _raw.append((leg, round(1.0 / max(_o, 1.01), 4),
-                             f"implied {round(1.0 / max(_o, 1.01), 3)} (board longshot)", _o))
-            _raw.sort(key=lambda t: t[3])
-            for leg, pr, why, dp in _raw:
-                if len(picks) >= 8:
-                    break
-                try:
-                    fk = _norm_team(leg.get("home_team", "")) + "|" + _norm_team(leg.get("away_team", ""))
-                except Exception:
-                    fk = str(len(picks))
-                if fix.get(fk, 0) >= 1:
-                    continue
-                picks.append((leg, pr, why))
-                fix[fk] = fix.get(fk, 0) + 1
-                comb *= max(dp, 1.01)
-                if comb >= 10000 and len(picks) >= 4:
-                    break
-        except Exception:
-            pass
     return picks
 
 
