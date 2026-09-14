@@ -49,10 +49,12 @@ export default function Home() {
   const SLIP_TAB = kind === 'weekly' ? 'W-slip' : 'D-slip';
   const FILTERS = [SLIP_TAB, ...PENDING_TABS];
   const [openId, setOpenId] = useState(null);
+  const [buildKey, setBuildKey] = useState('');
   const pollRef = useRef(null);
   const buildPollRef = useRef(null);
 
   useEffect(() => {
+    try { setBuildKey(localStorage.getItem('acca_build_key') || ''); } catch (e) {}
     refreshAll();
     pollRef.current = setInterval(fetchStatus, 8000);
     return () => {
@@ -95,12 +97,16 @@ export default function Home() {
     setBuilding(true);
     setError('');
     try {
+      const key = (buildKey || '').trim();
+      if (!key) throw new Error('Enter your build key first (same secret as the cron gate).');
+      try { localStorage.setItem('acca_build_key', key); } catch (e) {}
       const res = await fetch('/api/build', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify({ kind, max_legs: 20, use_ai: true }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401) throw new Error('Build key rejected — check the secret matches Vercel CRON_SECRET.');
       if (!res.ok) throw new Error(data.error || `Build rejected (${res.status})`);
       clearInterval(buildPollRef.current);
       buildPollRef.current = setInterval(async () => {
@@ -196,6 +202,14 @@ export default function Home() {
           </div>
         </div>
         <div className="sheet-action">
+          <input
+            type="password"
+            className="build-key"
+            placeholder="Build key"
+            autoComplete="off"
+            value={buildKey}
+            onChange={(e) => setBuildKey(e.target.value)}
+          />
           <button className="build" onClick={build} disabled={building || workerDown}>
             {building ? 'Scanning odds…' : (kind === 'daily' ? 'File daily slips (steady + dreamer)' : `File a ${kind} slip`)}
           </button>

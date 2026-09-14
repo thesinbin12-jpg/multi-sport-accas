@@ -62,6 +62,7 @@ body {
 .build { width: 100%; padding: 15px 18px; font-size: 16px; font-weight: 650; color: #fff; background: var(--accent); border: none; border-radius: var(--radius); cursor: pointer; }
 .build:hover:not(:disabled) { background: var(--accent-deep); }
 .build:disabled { background: #9aa89d; cursor: not-allowed; }
+.build-key { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 14px; font-family: inherit; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: inherit; margin-bottom: 8px; }
 .sheet-note { margin-top: 10px; font-size: 13px; color: var(--muted); }
 .sheet-error { margin-top: 8px; font-size: 13.5px; color: var(--lost); }
 
