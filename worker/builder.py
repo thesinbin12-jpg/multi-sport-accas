@@ -570,6 +570,29 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     tickets = [ticket]
     globals()["_LAST_BUILD_DIAG"] = {"kind": kind, "steady_legs": len(built),
         "steady_comb": combined}
+    if weekly:
+        # FIXTURE-LED 7-DAY WEEKLY: books price ~48h ahead, so Monday scans
+        # can never see the weekend. Fixtures lead (FotMob 7d + FDO scheduled)
+        # -> seed queues the week's ~25 -> real Betika odds attach per match
+        # progressively (now for Mon-Tue, nightly learn fills Wed-Sun).
+        try:
+            try:
+                from weekly_seed import seed_week, price_and_append
+            except ImportError:
+                from worker.weekly_seed import seed_week, price_and_append  # type: ignore
+            _seed = seed_week(progress_cb=progress_cb) or {}
+            _fresh, _app = price_and_append(ticket, progress_cb=progress_cb) or ([], {})
+            try:
+                globals()["_LAST_BUILD_DIAG"].update({
+                    "seed_fixtures": (_seed or {}).get("fixtures", 0),
+                    "seed_queued": (_seed or {}).get("queued", 0),
+                    "append_priced": (_app or {}).get("priced", 0),
+                    "steady_legs": len(ticket.get("legs", [])),
+                    "steady_comb": ticket.get("combined_odds", combined)})
+            except Exception:
+                pass
+        except Exception:
+            pass
     return tickets
 
 

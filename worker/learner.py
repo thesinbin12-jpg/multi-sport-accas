@@ -1398,6 +1398,23 @@ def nightly_learn(days_from: int = 5) -> dict:
     decision = reason(patterns, legs, (prev or {}).get("notes", ""), persona)
     _save_patterns(patterns, decision)
     watch = weekly_watch()
+    wfill = {"priced": 0}
+    if watch.get("state") == "holding":
+        # WEEKLY FILL: fixture-led shortlist prices Wed-Sun legs as books
+        # publish odds. Append-only (results/post-mortems untouched).
+        try:
+            try:
+                from weekly_seed import price_and_append, current_week_id
+            except ImportError:
+                from worker.weekly_seed import price_and_append, current_week_id  # type: ignore
+            _wt = _latest_ticket("weekly")
+            if _wt and str(_wt.get("created_at", ""))[:10] >= current_week_id():
+                _ex = [dict(l) for l in db.get_legs(_wt["id"])]
+                _fresh, wfill = price_and_append({"legs": _ex}, progress_cb=None) or ([], {})
+                if _fresh:
+                    db.append_ticket_legs(_wt["id"], _fresh)
+        except Exception:
+            pass
     lost_stories = _explain_losses(legs)
 
     acc = db.get_accuracy_stats()
@@ -1441,6 +1458,7 @@ def nightly_learn(days_from: int = 5) -> dict:
         "patterns": patterns,
         "personas": persona.get("table"),
         "weekly": watch,
+        "weekly_fill": wfill,
         "lost_stories": lost_stories,
         "calibration": _calib,
         "team_memory_teams": _tmem_n,

@@ -54,7 +54,6 @@ export default function Home() {
   const buildPollRef = useRef(null);
 
   useEffect(() => {
-    try { setBuildKey(localStorage.getItem('acca_build_key') || ''); } catch (e) {}
     refreshAll();
     pollRef.current = setInterval(fetchStatus, 8000);
     return () => {
@@ -98,8 +97,7 @@ export default function Home() {
     setError('');
     try {
       const key = (buildKey || '').trim();
-      if (!key) throw new Error('Enter your build key first (same secret as the cron gate).');
-      try { localStorage.setItem('acca_build_key', key); } catch (e) {}
+      if (!key) throw new Error('Type your build key first (never saved on this phone).');
       const res = await fetch('/api/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },

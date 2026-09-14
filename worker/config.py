@@ -37,6 +37,7 @@ ODDS_MIN_FLOOR = int(_get("ODDS_MIN_CREDITS_FLOOR", "50"))
 SCAN_FOCUS = _get("SCAN_FOCUS", "")
 MAX_CREDITS_PER_SCAN = int(_get("MAX_CREDITS_PER_SCAN", "400"))
 MAX_LEGS_PER_ACCA = int(_get("MAX_LEGS_PER_ACCA", "20"))  # ceiling 20, never forced: quality floor (0.55 past 6 legs) + rank trim decide
+WEEKLY_MAX_LEGS = int(_get("WEEKLY_MAX_LEGS", "25"))  # 7-day weekly fills Mon->Sun via shortlist (user spec: up to 25)
 SCOUT_FIXTURES = int(_get("SCOUT_FIXTURES", "24"))  # fixtures given FDO history per build (10 req/min free tier)
 DAILY_LLM_BUDGET = int(_get("DAILY_LLM_BUDGET", "900"))  # Groq workhorse: 1000 RPD free (gpt-oss/qwen), buffer kept
 GEMINI_DAILY = int(_get("GEMINI_DAILY", "30"))  # AI Studio free cuts dynamically (as low as ~20 RPD); stay small
@@ -65,6 +66,7 @@ def as_dict() -> dict:
         "NVIDIA_API_KEY": masked(NVIDIA_API_KEY),
         "DATABASE_URL": masked(DATABASE_URL),
         "MAX_LEGS_PER_ACCA": MAX_LEGS_PER_ACCA,
+        "WEEKLY_MAX_LEGS": WEEKLY_MAX_LEGS,
         "MIN_ODDS": MIN_ODDS,
         "MAX_ODDS": MAX_ODDS,
     }

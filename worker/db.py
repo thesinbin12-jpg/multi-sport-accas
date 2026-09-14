@@ -79,6 +79,23 @@ SCHEMA_SQL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS acca_weekly_shortlist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        week_id TEXT NOT NULL DEFAULT '',
+        home TEXT NOT NULL DEFAULT '',
+        away TEXT NOT NULL DEFAULT '',
+        league TEXT NOT NULL DEFAULT '',
+        src TEXT NOT NULL DEFAULT '',
+        commence_time TEXT NOT NULL DEFAULT '',
+        market TEXT NOT NULL DEFAULT '',
+        selection TEXT NOT NULL DEFAULT '',
+        prob REAL NOT NULL DEFAULT 0.0,
+        why TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'queued',
+        created_at TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS acca_results (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticket_id TEXT NOT NULL,
@@ -580,6 +597,167 @@ def get_accuracy_stats() -> dict:
             r = cur.fetchone()
             n, w = int(r["n"] or 0), int(r["w"] or 0)
             return {"verified_tickets": n, "won_tickets": w, "accuracy": (w / n if n else 0.0)}
+
+
+def append_ticket_legs(ticket_id: str, new_legs: list) -> int:
+    """Append legs to an open ticket (weekly fill). No delete: existing rows
+    (results, lost_why post-mortems, settle) are untouched. Recomputes
+    combined odds. Returns appended count. Never raises."""
+    try:
+        if not new_legs:
+            return 0
+        import math as _math
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT legs FROM acca_tickets WHERE id=%s", (ticket_id,))
+                    r = cur.fetchone()
+                    if not r:
+                        return 0
+                    try:
+                        legs = json.loads(r[0]) if isinstance(r[0], str) else (r[0] or [])
+                    except Exception:
+                        legs = []
+                    legs = list(legs) + list(new_legs)
+                    try:
+                        comb = round(_math.prod(max(float(l.get("odds", 1.0)), 1.01) for l in legs), 3)
+                    except Exception:
+                        comb = 0.0
+                    cur.execute("UPDATE acca_tickets SET legs=%s, combined_odds=%s WHERE id=%s",
+                                (json.dumps(legs), comb, ticket_id))
+                    for leg in new_legs:
+                        cur.execute(
+                            "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market, commence_time, sport_key, bookmaker) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                            (ticket_id, leg.get("sport", ""), leg.get("league", ""), leg.get("match", ""),
+                             leg.get("selection", ""), float(leg.get("odds", 1.0)),
+                             float(leg.get("probability", 0.0)), leg.get("result", "pending"),
+                             str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or ""),
+                             str(leg.get("commence_time", "") or ""), str(leg.get("sport_key", "") or ""),
+                             str(leg.get("bookmaker", "") or "")))
+                    conn.commit()
+                    return len(new_legs)
+                finally:
+                    conn.close()
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "SELECT legs FROM acca_tickets WHERE id=%s", (ticket_id,))
+            r = cur.fetchone()
+            if not r:
+                return 0
+            try:
+                legs = json.loads(r[0]) if isinstance(r[0], str) else (r[0] or [])
+            except Exception:
+                legs = []
+            legs = list(legs) + list(new_legs)
+            try:
+                comb = round(_math.prod(max(float(l.get("odds", 1.0)), 1.01) for l in legs), 3)
+            except Exception:
+                comb = 0.0
+            _execute(cur, "UPDATE acca_tickets SET legs=%s, combined_odds=%s WHERE id=%s", (json.dumps(legs), comb, ticket_id))
+            for leg in new_legs:
+                _execute(cur, "INSERT INTO acca_legs (ticket_id, sport, league, match, selection, odds, probability, result, analysis, market, commence_time, sport_key, bookmaker) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                         (ticket_id, leg.get("sport", ""), leg.get("league", ""), leg.get("match", ""),
+                          leg.get("selection", ""), float(leg.get("odds", 1.0)),
+                          float(leg.get("probability", 0.0)), leg.get("result", "pending"),
+                          str(leg.get("analysis", "") or "")[:2000], str(leg.get("market", "") or ""),
+                          str(leg.get("commence_time", "") or ""), str(leg.get("sport_key", "") or ""),
+                          str(leg.get("bookmaker", "") or "")))
+            conn.commit()
+            return len(new_legs)
+    except Exception:
+        return 0
+
+
+# ---- weekly shortlist (fixture-led 7-day weekly) ----
+
+def save_shortlist(week_id: str, items: list) -> int:
+    """Replace this week's queued/dropped rows with fresh picks. Priced rows kept. Never raises."""
+    try:
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM acca_weekly_shortlist WHERE week_id=%s AND status IN ('queued','dropped')", (week_id,))
+                    for it in items or []:
+                        cur.execute(
+                            "INSERT INTO acca_weekly_shortlist (week_id, home, away, league, src, commence_time, market, selection, prob, why, status, created_at) "
+                            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'queued',%s)",
+                            (week_id, str(it.get("home", ""))[:160], str(it.get("away", ""))[:160],
+                             str(it.get("league", ""))[:160], str(it.get("src", ""))[:40],
+                             str(it.get("day", ""))[:24], str(it.get("market", ""))[:40],
+                             str(it.get("selection", ""))[:80], float(it.get("prob", 0) or 0),
+                             str(it.get("why", ""))[:2000], _now()))
+                    conn.commit()
+                    return len(items or [])
+                finally:
+                    conn.close()
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "DELETE FROM acca_weekly_shortlist WHERE week_id=%s AND status IN ('queued','dropped')", (week_id,))
+            for it in items or []:
+                _execute(cur, "INSERT INTO acca_weekly_shortlist (week_id, home, away, league, src, commence_time, market, selection, prob, why, status, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'queued',%s)",
+                         (week_id, str(it.get("home", ""))[:160], str(it.get("away", ""))[:160],
+                          str(it.get("league", ""))[:160], str(it.get("src", ""))[:40],
+                          str(it.get("day", ""))[:24], str(it.get("market", ""))[:40],
+                          str(it.get("selection", ""))[:80], float(it.get("prob", 0) or 0),
+                          str(it.get("why", ""))[:2000], _now()))
+            conn.commit()
+            return len(items or [])
+    except Exception:
+        return 0
+
+
+def get_shortlist(week_id: str, statuses=("queued",)) -> list:
+    """Shortlist rows for a week. Never raises."""
+    try:
+        init_schema()
+        sts = tuple(statuses or ("queued",))
+        with _lock:
+            if _is_postgres():
+                import psycopg2.extras  # type: ignore
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                    cur.execute("SELECT * FROM acca_weekly_shortlist WHERE week_id=%s AND status = ANY(%s) ORDER BY prob DESC, id", (week_id, list(sts)))
+                    return [dict(r) for r in cur.fetchall()]
+                finally:
+                    conn.close()
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            q = "SELECT * FROM acca_weekly_shortlist WHERE week_id=%s AND status IN (%s) ORDER BY prob DESC, id" % ("%s", ",".join(["%s"] * len(sts)))
+            _execute(cur, q, (week_id, *sts))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def set_shortlist_status(week_id: str, home: str, away: str, status: str) -> None:
+    """Mark one shortlist row priced/dropped. Never raises."""
+    try:
+        init_schema()
+        with _lock:
+            if _is_postgres():
+                conn = _pg_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("UPDATE acca_weekly_shortlist SET status=%s WHERE week_id=%s AND home=%s AND away=%s", (status, week_id, home, away))
+                    conn.commit()
+                finally:
+                    conn.close()
+                return
+            conn = _sqlite_conn()
+            cur = conn.cursor()
+            _execute(cur, "UPDATE acca_weekly_shortlist SET status=%s WHERE week_id=%s AND home=%s AND away=%s", (status, week_id, home, away))
+            conn.commit()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
