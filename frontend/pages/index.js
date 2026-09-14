@@ -105,7 +105,7 @@ export default function Home() {
         body: JSON.stringify({ kind, max_legs: 20, use_ai: true, slips: kind === 'daily' ? slips : 'both' }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.status === 401) throw new Error('Build key rejected — check the secret matches Vercel CRON_SECRET.');
+      if (res.status === 401) throw new Error('Incorrect build key — try again.');
       if (!res.ok) throw new Error(data.error || `Build rejected (${res.status})`);
       clearInterval(buildPollRef.current);
       buildPollRef.current = setInterval(async () => {
