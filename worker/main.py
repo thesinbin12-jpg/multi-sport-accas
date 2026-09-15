@@ -249,6 +249,20 @@ def health():
     return {"ok": True, "service": "multi-sport-accas-worker", "env": config.as_dict()}
 
 
+@app.get("/dbping")
+def dbping():
+    """Keepalive target that touches the DB: wakes Neon's auto-suspended compute
+    and refreshes pgbouncer's pooled server connections. /health never touches
+    the DB, so Neon still suspended every night and the 01:14 learn wedged on a
+    zombie pooled connection. Keepalive chain (cron-job.org -> Vercel proxy)
+    should hit THIS, not /health."""
+    try:
+        db.ping()
+        return {"ok": True, "db": True}
+    except Exception as e:
+        return {"ok": False, "db": False, "error": str(e)[:150]}
+
+
 @app.get("/status")
 def status():
     with _state_lock:
