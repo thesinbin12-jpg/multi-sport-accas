@@ -18,23 +18,26 @@ def _is_postgres() -> bool:
 
 
 def _pg_conn():
-    """Fresh Neon connection, but bounded: without connect_timeout libpq blocks
-    indefinitely when pgbouncer is saturated, which made /status and /accas hang
-    forever during learn runs. Timeouts turn that into a fast, catchable error."""
+    """Neon connection, bounded two ways:
+    1. connect_timeout/tcp_user_timeout/keepalives bound TCP+TLS (was: infinite).
+    2. Direct (unpooled) host + statement_timeout=20s bounds the QUERY itself:
+       pgbouncer rejects statement_timeout as a startup option, and its pooled
+       server connections go zombie when Neon auto-suspends the compute (TCP
+       stays established, keepalives see ACKs, recv blocks forever). The direct
+       endpoint accepts the option, so a hung query errors in 20s instead of
+       wedging the whole worker (db._lock held forever -> every db call blocks)."""
     import psycopg2  # type: ignore
     import psycopg2.extras  # type: ignore
-    url = config.DATABASE_URL or ""
+    url = (config.DATABASE_URL or "").replace("-pooler.", ".")
     kwargs = {
         "connect_timeout": 10,        # TCP+TLS+auth handshake cap (was: infinite)
-        "tcp_user_timeout": 15000,    # abort dead sockets after 15s
+        "tcp_user_timeout": 15000,    # abort unacknowledged sends after 15s
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 3,
+        "options": "-c statement_timeout=20000",  # hung query errors in 20s
     }
-    # NOTE: statement_timeout is NOT sent — Neon pgbouncer rejects it as an
-    # unsupported startup parameter (https://neon.tech/docs/connect/connection-errors).
-    # The client-side timeouts above are what bound the hang.
     return psycopg2.connect(url, **kwargs)
 
 

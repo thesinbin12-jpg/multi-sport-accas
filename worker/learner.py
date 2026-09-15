@@ -55,15 +55,14 @@ def _is_pg() -> bool:
 def _conn():
     if _is_pg():
         import psycopg2  # type: ignore
-        url = os.environ.get("DATABASE_URL") or config.DATABASE_URL
+        url = (os.environ.get("DATABASE_URL") or config.DATABASE_URL or "").replace("-pooler.", ".")
         kwargs = {
             "connect_timeout": 10,
             "tcp_user_timeout": 15000,
             "keepalives": 1, "keepalives_idle": 30,
             "keepalives_interval": 10, "keepalives_count": 3,
+            "options": "-c statement_timeout=20000",  # direct endpoint accepts it; zombie queries error in 20s
         }
-        # statement_timeout NOT sent — Neon pgbouncer rejects it as an unsupported
-        # startup parameter; the client-side timeouts above bound the hang.
         return psycopg2.connect(url, **kwargs)
     import sqlite3  # type: ignore
     path = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "accas.db"))
