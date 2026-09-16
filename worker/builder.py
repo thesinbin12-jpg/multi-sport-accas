@@ -328,12 +328,13 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
     diverse.sort(key=lambda l: abs(float(l.get("best_odds", 2.0)) - center))
     # Learner strategy: skip cold leagues, prefer proven odds band (never breaks builds)
     try:
-        from learner import get_strategy
+        from learner import get_strategy, calibration_discount
     except ImportError:
         try:
-            from worker.learner import get_strategy  # type: ignore
+            from worker.learner import get_strategy, calibration_discount  # type: ignore
         except ImportError:
             get_strategy = None  # type: ignore
+            calibration_discount = None  # type: ignore
     if get_strategy:
         try:
             strat = get_strategy() or {}
@@ -463,6 +464,14 @@ def build_tickets(max_legs: int | None = None, use_ai: bool = True,
             prob = float(prob)
         except Exception:
             prob = 0.0
+        if calibration_discount:
+            try:
+                _f = calibration_discount(float(prob))
+                if _f < 1.0:
+                    prob = max(0.05, min(0.99, float(prob) * _f))
+                    why = f"{why} [calib x{_f:.2f}]"
+            except Exception:
+                pass
         assessed.append((leg, prob, why))
     # Phase 2: pick.
     # Daily = TWO slips from one trigger: steady (~50x, best probs) +

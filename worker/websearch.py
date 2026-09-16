@@ -15,6 +15,7 @@ _UA = ("Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
        "Chrome/120.0 Mobile Safari/537.36")
 
 _SKIP_UNTIL: dict = {}  # backend -> epoch: skip fast while chronically failing
+_FAIL_STREAK: dict = {}  # backend -> consecutive in-process fails (DB-independent fast skip)
 
 
 def _sess():
@@ -27,6 +28,7 @@ def _sess():
 
 def _rec(source, ok, ms=0, err=""):
     try:
+        _FAIL_STREAK[source] = 0 if ok else _FAIL_STREAK.get(source, 0) + 1
         try:
             from learner import source_record
         except ImportError:
@@ -129,6 +131,42 @@ def ddg_search(query, max_results=5, timeout=20):
     return out
 
 
+def gnews_search(query, max_results=5, timeout=15):
+    """Google News RSS: free, structured XML, no bot-challenge, reachable from
+    datacenter IPs (unlike DDG lite which ConnectTimeouts from Render).
+    Headlines often carry scorelines — ideal for settle_parse + leg_context."""
+    out = []
+    import time as _t
+    _t0 = _t.time()
+    try:
+        import urllib.parse as _up
+        import requests as _rq
+        url = "https://news.google.com/rss/search?q=" + _up.quote_plus(query)
+        url += "&hl=en-US&gl=US&ceid=US:en"
+        r = _rq.get(url, headers={"User-Agent": _UA}, timeout=timeout)
+        if r.status_code != 200 or not r.text:
+            _rec("web-gnews", False, int((_t.time() - _t0) * 1000), "status %s" % r.status_code)
+            return out
+        items = re.findall(r"<item>(.*?)</item>", r.text, re.DOTALL)[:max_results]
+        for it in items:
+            t = re.search(r"<title>(.*?)</title>", it, re.DOTALL)
+            l = re.search(r"<link>(.*?)</link>", it, re.DOTALL)
+            p = re.search(r"<pubDate>(.*?)</pubDate>", it, re.DOTALL)
+            s = re.search(r"<source[^>]*>(.*?)</source>", it, re.DOTALL)
+            title = html.unescape(t.group(1)).strip() if t else ""
+            if title:
+                sn = ((s.group(1).strip() + ": " if s else "") + (p.group(1).strip() if p else ""))[:120]
+                out.append({"title": title[:150], "snippet": sn,
+                            "source": "gnews", "url": (l.group(1).strip() if l else "")})
+        _rec("web-gnews", bool(out), int((_t.time() - _t0) * 1000), "" if out else "empty")
+    except Exception as e:
+        try:
+            _rec("web-gnews", False, 0, str(e)[:120])
+        except Exception:
+            pass
+    return out
+
+
 def tavily_search(query, max_results=4, timeout=20):
     out = []
     try:
@@ -160,9 +198,17 @@ def tavily_search(query, max_results=4, timeout=20):
 
 def _backend_ok(name):
     """False when a backend is chronically failing (skip fast, save latency),
-    with a 30-min re-probe so recoveries are picked up. Never raises."""
+    with a 30-min re-probe so recoveries are picked up. Fast path: 3+ in-process
+    consecutive fails (no DB read, so it engages even when the DB is hot/locked).
+    Never raises."""
     import time as _tt
     try:
+        if _FAIL_STREAK.get(name, 0) >= 3:
+            if _SKIP_UNTIL.get(name, 0) <= _tt.time():
+                _FAIL_STREAK[name] = 0  # re-probe once: clear streak, let one call through
+                _SKIP_UNTIL[name] = _tt.time() + 1800
+            else:
+                return False
         if _SKIP_UNTIL.get(name, 0) > _tt.time():
             return False
         try:
@@ -182,6 +228,9 @@ def search(query, max_results=5, allow_tavily=False, timeout=20):
     Chronically-failing backends are skipped fast (30-min re-probe); Tavily
     only when explicitly allowed (paid quota)."""
     out = brave_search(query, max_results, timeout) if _backend_ok("web-brave") else []
+    if len(out) < 2 and _backend_ok("web-gnews"):
+        out = out + [r for r in gnews_search(query, max_results, timeout)
+                     if r["title"] not in {x["title"] for x in out}]
     if len(out) < 2 and _backend_ok("web-ddg"):
         out = out + [r for r in ddg_search(query, max_results, timeout)
                      if r["title"] not in {x["title"] for x in out}]

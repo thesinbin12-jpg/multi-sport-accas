@@ -892,8 +892,17 @@ def web_search(query: str, max_results: int = 3) -> dict:
                 return {"text": _txt, "source": "brave" if "brave" in _src else "duckduckgo" if "ddg" in _src else _src}
     except Exception:
         pass
-    # Tavily is LAST resort (paid quota): direct DDG runs before it.
-    text = _ddg_search(query, max_results)
+    # Tavily is LAST resort (paid quota): direct DDG runs before it, but only
+    # when DDG is not chronically failing (ConnectTimeouts from datacenters).
+    try:
+        try:
+            from websearch import _backend_ok as _wok
+        except ImportError:
+            from worker.websearch import _backend_ok as _wok  # type: ignore
+        _ddg_ok = _wok("web-ddg")
+    except Exception:
+        _ddg_ok = True
+    text = _ddg_search(query, max_results) if _ddg_ok else ""
     if text:
         return {"text": text, "source": "duckduckgo"}
     text = _tavily_search(query, max_results)

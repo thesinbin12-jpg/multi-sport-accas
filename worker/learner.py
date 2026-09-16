@@ -225,12 +225,13 @@ def _llm_available() -> bool:
     )
 
 
-def _ask_llm(prompt: str, system: str) -> tuple[str | None, str | None]:
-    """Returns (text, model_used) or (None, error)."""
+def _ask_llm(prompt: str, system: str, json_mode: bool = False) -> tuple[str | None, str | None]:
+    """Returns (text, model_used) or (None, error). json_mode forces API-level
+    JSON output (response_format/responseMimeType) at the strategist sites."""
     if not _llm_available():
         return None, "no LLM key"
     try:
-        text, model, err, _elapsed = router.analyze(prompt, system_prompt=system)
+        text, model, err, _elapsed = router.analyze(prompt, system_prompt=system, json_mode=json_mode)
         if err or not text:
             return None, err or "empty reply"
         return text, model
@@ -856,7 +857,7 @@ def reason(patterns: dict, legs: list, prev_notes: str, persona: dict | None = N
         personas=json.dumps(persona.get("table") or [])[:1500],
         prev_notes=(prev_notes or "none — first debrief")[:800],
     )
-    text, model = _ask_llm(prompt, ANALYST_SYSTEM)
+    text, model = _ask_llm(prompt, ANALYST_SYSTEM, json_mode=True)
     if not text:
         d = _heuristic_fallback(patterns)
         d["notes"] += f" (LLM unavailable)"
@@ -873,7 +874,7 @@ def reason(patterns: dict, legs: list, prev_notes: str, persona: dict | None = N
         try:
             text2, model2 = _ask_llm(
                 "Reply with ONLY the JSON object, no prose, no fences, no thinking tags:\n" + prompt,
-                ANALYST_SYSTEM)
+                ANALYST_SYSTEM, json_mode=True)
             if text2:
                 _d2 = _extract_json(text2)
                 if _d2:
@@ -1225,6 +1226,43 @@ def _calib_bucket(prob: float) -> str:
     if p < 0.80:
         return CALIB_BUCKETS[3]
     return CALIB_BUCKETS[4]
+
+
+_CALIB_CACHE: dict = {"ts": 0.0, "rows": []}
+
+
+def calibration_discount(p: float) -> float:
+    """Multiplier from the calibration ledger for one probability.
+    Bands where we hit far below expectation (n>=5, rate < expected-0.07)
+    are discounted toward reality (e.g. 0.35-0.50 hitting 9% vs 42%
+    expected -> x~0.25). Neutral 1.0 everywhere else. Cached 1h per process.
+    The builder applies this so overconfident bands stop filing. Never raises."""
+    try:
+        import time as _tt
+        now = _tt.time()
+        if now - float(_CALIB_CACHE.get("ts", 0) or 0) > 3600:
+            init_learner_schema()
+            conn = _conn()
+            try:
+                cur = conn.cursor()
+                _exec(cur, "SELECT bucket, n, won FROM acca_calib ORDER BY bucket")
+                _CALIB_CACHE["rows"] = list(cur.fetchall())
+            finally:
+                conn.close()
+            _CALIB_CACHE["ts"] = now
+        for b, n, w in _CALIB_CACHE.get("rows", []):
+            try:
+                lo, hi = float(str(b).split("-")[0]), float(str(b).split("-")[1])
+                if lo - 1e-9 <= float(p) <= hi + 1e-9 and (n or 0) >= 5:
+                    exp = (lo + hi) / 2
+                    rate = (w or 0) / max(n or 0, 1)
+                    if rate < exp - 0.07:
+                        return max(0.2, min(1.0, rate / max(exp, 1e-6)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 1.0
 
 
 def rebuild_calibration() -> dict:

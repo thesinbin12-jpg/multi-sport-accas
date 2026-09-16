@@ -62,10 +62,18 @@ class AIRouter:
         ]
         self.gemini_api_base = "https://generativelanguage.googleapis.com/v1"
     
-    def call_groq(self, model, messages, max_tokens=1024, temperature=0.7):
-        """Call Groq API (OpenAI-compatible)."""
+    def call_groq(self, model, messages, max_tokens=1024, temperature=0.7, json_mode=False):
+        """Call Groq API (OpenAI-compatible). json_mode forces response_format."""
         if not GROQ_KEY:
             return None, "GROQ_KEY not set"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         try:
             r = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -73,14 +81,15 @@ class AIRouter:
                     "Authorization": f"Bearer {GROQ_KEY}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                },
+                json=payload,
                 timeout=30,
             )
+            if json_mode and r.status_code == 400 and "response_format" in r.text:
+                payload.pop("response_format", None)  # old model rejects it; retry plain
+                r = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+                    json=payload, timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 return data["choices"][0]["message"]["content"], None
@@ -108,18 +117,27 @@ class AIRouter:
             return bool(NIM_KEY)
         return False
 
-    def call_nim(self, model, messages, max_tokens=1024, temperature=0.7):
+    def call_nim(self, model, messages, max_tokens=1024, temperature=0.7, json_mode=False):
         if not NIM_KEY:
             return None, "NIM_KEY not set"
         if "deepseek" in str(model):
             max_tokens = max(max_tokens, 2048)  # reasoning models think first; 1024 starves the answer
+        payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         try:
             r = requests.post(
                 f"{NIM_BASE}/chat/completions",
                 headers={"Authorization": f"Bearer {NIM_KEY}", "Content-Type": "application/json"},
-                json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+                json=payload,
                 timeout=25,
             )
+            if json_mode and r.status_code == 400 and "response_format" in r.text:
+                payload.pop("response_format", None)
+                r = requests.post(
+                    f"{NIM_BASE}/chat/completions",
+                    headers={"Authorization": f"Bearer {NIM_KEY}", "Content-Type": "application/json"},
+                    json=payload, timeout=25)
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"], None
             if r.status_code == 429:
@@ -136,10 +154,18 @@ class AIRouter:
         except Exception as e:
             return None, "NIM exception: " + str(e)
 
-    def call_openrouter(self, model, messages, max_tokens=1024, temperature=0.7):
+    def call_openrouter(self, model, messages, max_tokens=1024, temperature=0.7, json_mode=False):
         """Call OpenRouter (OpenAI-compatible, :free models need only a key)."""
         if not OR_KEY:
             return None, "OR_KEY not set"
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         try:
             r = requests.post(
                 f"{OR_BASE}/chat/completions",
@@ -149,12 +175,7 @@ class AIRouter:
                     "HTTP-Referer": "https://accas-roan.vercel.app",
                     "X-Title": "multi-sport-accas",
                 },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                },
+                json=payload,
                 timeout=45,
             )
             if r.status_code == 200:
@@ -169,10 +190,13 @@ class AIRouter:
         except Exception as e:
             return None, f"OpenRouter exception: {e}"
 
-    def call_gemini(self, model, prompt, max_tokens=1024):
+    def call_gemini(self, model, prompt, max_tokens=1024, json_mode=False):
         """Call Gemini API (Google AI Studio)."""
         if not GEMINI_KEY:
             return None, "GEMINI_KEY not set"
+        gcfg = {"maxOutputTokens": max_tokens}
+        if json_mode:
+            gcfg["responseMimeType"] = "application/json"
         try:
             url = f"{self.gemini_api_base}/{model}:generateContent"
             r = requests.post(
@@ -180,9 +204,7 @@ class AIRouter:
                 params={"key": GEMINI_KEY},
                 json={
                     "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "maxOutputTokens": max_tokens,
-                    },
+                    "generationConfig": gcfg,
                 },
                 timeout=30,
             )
@@ -201,10 +223,12 @@ class AIRouter:
         except Exception as e:
             return None, f"Gemini exception: {e}"
     
-    def analyze(self, prompt, system_prompt="", model_pref=None):
+    def analyze(self, prompt, system_prompt="", model_pref=None, json_mode=False):
         """
         Route analysis request through fallback chain.
         Returns (analysis_text, model_used, error).
+        json_mode forces API-level JSON (response_format/responseMimeType) so
+        reasoning models emit valid JSON in content instead of <think> prose.
         """
         messages = []
         if system_prompt:
@@ -212,6 +236,7 @@ class AIRouter:
         messages.append({"role": "user", "content": prompt})
 
         # Track timing for logging
+        _json_mode = json_mode
         start = time.time()
         last_error = None
 
@@ -223,7 +248,7 @@ class AIRouter:
         if not model_pref or model_pref == "groq":
             _gq = [m for m in self.groq_models if not _hot(m)] or list(self.groq_models)
             for model in _gq:
-                text, err = self.call_groq(model, messages)
+                text, err = self.call_groq(model, messages, json_mode=_json_mode)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed
@@ -232,7 +257,7 @@ class AIRouter:
         # Phase 2: Try Gemini models in order  
         if not model_pref or model_pref == "gemini":
             for model in self.gemini_models:
-                text, err = self.call_gemini(model, prompt)
+                text, err = self.call_gemini(model, prompt, json_mode=_json_mode)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed
@@ -241,7 +266,7 @@ class AIRouter:
         # Phase 3: Try Gemma as last resort
         if not model_pref or model_pref == "gemma":
             for model in self.gemma_models:
-                text, err = self.call_gemini(model, prompt)
+                text, err = self.call_gemini(model, prompt, json_mode=_json_mode)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed
@@ -255,7 +280,7 @@ class AIRouter:
         if not model_pref or model_pref == "nim":
             _nm = [m for m in NIM_MODELS if not _hot(m)] or list(NIM_MODELS)
             for model in _nm:
-                text, err = self.call_nim(model, messages)
+                text, err = self.call_nim(model, messages, json_mode=_json_mode)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed
@@ -264,7 +289,7 @@ class AIRouter:
         # Phase 4: OpenRouter :free models (server-side friendly, needs key)
         if not model_pref or model_pref == "orouter":
             for model in self.or_models:
-                text, err = self.call_openrouter(model, messages)
+                text, err = self.call_openrouter(model, messages, json_mode=_json_mode)
                 if text and not err:
                     elapsed = time.time() - start
                     return text, model, None, elapsed
