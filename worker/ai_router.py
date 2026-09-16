@@ -139,7 +139,29 @@ class AIRouter:
                     headers={"Authorization": f"Bearer {NIM_KEY}", "Content-Type": "application/json"},
                     json=payload, timeout=25)
             if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"], None
+                msg = r.json()["choices"][0]["message"]
+                content = msg.get("content")
+                finish = r.json()["choices"][0].get("finish_reason")
+                # Reasoning models eat max_tokens on thinking, then emit
+                # content:null + reasoning_content + finish_reason=length.
+                # Retry once with headroom before counting them as failed.
+                if (not content and finish == "length" and msg.get("reasoning_content")
+                        and r.json()["choices"][0].get("index") == 0):
+                    payload["max_tokens"] = max(payload.get("max_tokens", 1024) * 3, 2048)
+                    try:
+                        r = requests.post(
+                            f"{NIM_BASE}/chat/completions",
+                            headers={"Authorization": f"Bearer {NIM_KEY}", "Content-Type": "application/json"},
+                            json=payload, timeout=30)
+                    except requests.exceptions.Timeout:
+                        _cool(model)
+                        return None, "NIM timeout (25s fast-fail)"
+                    if r.status_code == 200:
+                        msg = r.json()["choices"][0]["message"]
+                        content = msg.get("content")
+                if content:
+                    return content, None
+                return None, "NIM empty content (reasoning starved)"
             if r.status_code == 429:
                 _cool(model)
                 return None, "NIM rate limited"

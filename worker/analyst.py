@@ -601,7 +601,12 @@ def _ask(prompt, system="", max_chars=1200, tries=1, gated=True, stage="swarm", 
     if prefer and prefer in provs:
         order = [prefer] + [p for p in order if p != prefer]
     last_model, last_err = "", ""
-    for attempt in range(max(1, tries)):
+    # 2026-09-16: FULL ROTATION. Old loop did range(max(1,tries)) with
+    # tries=1 at every call site -> ONE lane attempt; a dead preferred lane
+    # (NIM outage, 5x "All models failed" 08:06-08:12) sank the call before
+    # Groq/Gemini/OpenRouter ever ran. Now every provider gets one shot in
+    # rotation order until one answers; healthy first-lane calls unchanged.
+    for attempt in range(len(order) * max(1, tries)):
         pref = order[attempt % len(order)]
         _LAST_PREF[0] = pref
         _rpm_wait(pref)
