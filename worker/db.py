@@ -12,6 +12,17 @@ _sqlite_conn_obj = None
 _schema_ok = False  # per-process: schema is idempotent, no need to re-check every call
 
 
+class _locked:
+    """Bounded acquire for db._lock: if another operation holds it >30s, fail
+    fast instead of wedging every db call forever (a stuck holder used to block
+    /status + /accas + /insights for hours). Callers catch the error."""
+    def __enter__(self):
+        if not _lock.acquire(timeout=30):
+            raise TimeoutError("db busy: lock held >30s by another operation")
+    def __exit__(self, *a):
+        _lock.release()
+
+
 def _is_postgres() -> bool:
     url = config.DATABASE_URL or ""
     return url.startswith("postgres")
@@ -189,7 +200,7 @@ def init_schema() -> None:
     global _schema_ok
     if _schema_ok:
         return
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -253,7 +264,7 @@ def save_ticket(ticket_id: str, combined_odds: float, legs: list, status: str = 
     kind = kind if kind in ("daily", "weekly") else "daily"
     stake_json = json.dumps(stake or {})
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -300,7 +311,7 @@ def get_tickets(limit: int = 20, kind: str | None = None) -> list:
     init_schema()
     where = "" if kind not in ("daily", "weekly") else "WHERE kind = %s"
     params: tuple = () if kind not in ("daily", "weekly") else (kind,)
-    with _lock:
+    with _locked():
         if _is_postgres():
             import psycopg2.extras  # type: ignore
             conn = _pg_conn()
@@ -391,7 +402,7 @@ def _hydrate_leg_results(conn, tickets: list, _pg: bool = False) -> None:
 
 def count_tickets() -> int:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -409,7 +420,7 @@ def count_tickets() -> int:
 
 def update_ticket_status(ticket_id: str, status: str) -> None:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -429,7 +440,7 @@ def get_team_aliases() -> dict:
     """{variant: canonical} learned name pairs. Never raises."""
     try:
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
@@ -452,7 +463,7 @@ def save_team_alias(canonical: str, variant: str) -> None:
         if not canonical or not variant:
             return
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
@@ -477,7 +488,7 @@ def save_team_alias(canonical: str, variant: str) -> None:
 
 def update_leg_result(ticket_id: str, match: str, result: str, settle: str = "") -> None:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -505,7 +516,7 @@ def prune_pending(kind: str, keep: int = 2) -> int:
     """Delete oldest pending tickets of a kind, keeping the newest `keep`.
     Settled (won/lost/dissolved) tickets are never touched. Returns deleted count."""
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -539,7 +550,7 @@ def prune_pending(kind: str, keep: int = 2) -> int:
 
 def set_ticket_status(ticket_id: str, status: str) -> None:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -557,7 +568,7 @@ def set_ticket_status(ticket_id: str, status: str) -> None:
 
 def get_legs(ticket_id: str) -> list:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             import psycopg2.extras  # type: ignore
             conn = _pg_conn()
@@ -578,7 +589,7 @@ def get_legs(ticket_id: str) -> list:
 
 def record_verification(ticket_id: str, won: bool, correct: int, total: int, details: dict | None = None) -> None:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -601,7 +612,7 @@ def record_verification(ticket_id: str, won: bool, correct: int, total: int, det
 def record_accuracy(total: int, won: int, notes: str = "") -> float:
     acc = (won / total) if total else 0.0
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             conn = _pg_conn()
             try:
@@ -622,7 +633,7 @@ def record_accuracy(total: int, won: int, notes: str = "") -> float:
 
 def get_accuracy_stats() -> dict:
     init_schema()
-    with _lock:
+    with _locked():
         if _is_postgres():
             import psycopg2.extras  # type: ignore
             conn = _pg_conn()
@@ -652,7 +663,7 @@ def append_ticket_legs(ticket_id: str, new_legs: list) -> int:
             return 0
         import math as _math
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
@@ -723,7 +734,7 @@ def save_clv(ticket_id: str, match: str, market: str, selection: str,
     """One CLV snapshot row. Never raises."""
     try:
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
@@ -747,7 +758,7 @@ def clv_summary() -> dict:
     """{n, avg_edge} — edge>0 means we beat the close (real skill signal). Never raises."""
     try:
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
@@ -773,7 +784,7 @@ def recompute_bankroll(start_units: float = 100.0) -> float:
         init_schema()
         import math as _math
         units = float(start_units)
-        with _lock:
+        with _locked():
             tickets = get_tickets(limit=200)
             for t in tickets:
                 st = (t.get("status") or "pending")
@@ -833,7 +844,7 @@ def save_shortlist(week_id: str, items: list) -> int:
     """Replace this week's queued/dropped rows with fresh picks. Priced rows kept. Never raises."""
     try:
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
@@ -873,7 +884,7 @@ def get_shortlist(week_id: str, statuses=("queued",)) -> list:
     try:
         init_schema()
         sts = tuple(statuses or ("queued",))
-        with _lock:
+        with _locked():
             if _is_postgres():
                 import psycopg2.extras  # type: ignore
                 conn = _pg_conn()
@@ -897,7 +908,7 @@ def set_shortlist_status(week_id: str, home: str, away: str, status: str) -> Non
     """Mark one shortlist row priced/dropped. Never raises."""
     try:
         init_schema()
-        with _lock:
+        with _locked():
             if _is_postgres():
                 conn = _pg_conn()
                 try:
