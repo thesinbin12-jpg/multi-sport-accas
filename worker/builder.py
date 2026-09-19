@@ -831,13 +831,33 @@ def _pick_conservative(assessed: list, cap: int = 10) -> list:
 
 def _trim_to_target(built: list, target: float = 50.0, min_legs: int = 4, max_legs: int = 8) -> list:
     """Keep best-prob legs until combined reaches ~target (stops at target-5
-    once min_legs held). Never forces: thin pools keep what they have."""
+    once min_legs held). Thin pools: dynamically adjust target/max_legs so
+    we still file a meaningful ticket (4-8 legs) instead of 2-3 legs."""
+    if not built:
+        return []
     ordered = sorted(built, key=lambda b: -(float(b.get("probability") or 0.0)))
+    # Calculate max achievable combined odds with all available legs
+    max_comb = 1.0
+    for b in ordered:
+        try:
+            max_comb *= max(float(b.get("odds") or 1.01), 1.01)
+        except Exception:
+            pass
+    # If even all legs can't reach target, we're in a thin pool.
+    # Adjust: allow more legs (up to 20 ceiling) and lower target to 70% of max.
+    effective_max_legs = max_legs
+    effective_target = target
+    if max_comb < target:
+        # Thin pool: allow up to 12 legs (was 8), target 70% of achievable
+        effective_max_legs = min(12, len(ordered))
+        effective_target = max_comb * 0.7
+        # But never go below min_legs=4 or below 15x (floor)
+        effective_target = max(effective_target, 15.0)
     kept, comb = [], 1.0
     for b in ordered:
-        if len(kept) >= max_legs:
+        if len(kept) >= effective_max_legs:
             break
-        if len(kept) >= min_legs and comb >= target - 5.0:
+        if len(kept) >= min_legs and comb >= effective_target - 5.0:
             break
         kept.append(b)
         try:
