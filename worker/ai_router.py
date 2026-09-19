@@ -63,9 +63,13 @@ class AIRouter:
         self.gemini_api_base = "https://generativelanguage.googleapis.com/v1"
     
     def call_groq(self, model, messages, max_tokens=1024, temperature=0.7, json_mode=False):
-        """Call Groq API (OpenAI-compatible). json_mode forces response_format."""
+        """Call Groq API (OpenAI-compatible). json_mode forces response_format.
+        For reasoning models (qwen3.6-27b), retry once with 3x max_tokens if content is empty."""
         if not GROQ_KEY:
             return None, "GROQ_KEY not set"
+        # Reasoning models on Groq need headroom for thinking
+        if "qwen" in str(model).lower() and "3.6" in str(model):
+            max_tokens = max(max_tokens, 3072)
         payload = {
             "model": model,
             "messages": messages,
@@ -92,7 +96,25 @@ class AIRouter:
                     json=payload, timeout=30)
             if r.status_code == 200:
                 data = r.json()
-                return data["choices"][0]["message"]["content"], None
+                msg = data["choices"][0]["message"]
+                content = msg.get("content")
+                # If reasoning model emitted only thinking (content:null), retry once with more tokens
+                if not content and json_mode and "qwen" in str(model).lower() and "3.6" in str(model):
+                    payload["max_tokens"] = max(payload["max_tokens"] * 3, 4096)
+                    try:
+                        r = requests.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+                            json=payload, timeout=40)
+                        if r.status_code == 200:
+                            data = r.json()
+                            content = data["choices"][0]["message"].get("content")
+                    except requests.exceptions.Timeout:
+                        _cool(model)
+                        return None, "Groq timeout (reasoning retry)"
+                if content:
+                    return content, None
+                return None, "Groq empty content (reasoning starved)"
             elif r.status_code == 404:
                 return None, f"Model {model} not found"
             elif r.status_code == 429:
